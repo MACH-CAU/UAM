@@ -56,9 +56,7 @@ class DroneController(Node):
     def offboard_control_loop(self):
         """드론의 상태에 따라 Offboard, Arm, Takeoff 실행"""
   
-    
         if self.state == "INIT":
-        
             if self.arming_state == VehicleStatus.ARMING_STATE_ARMED:
                 self.get_logger().info("Switching to disarm...")
                 self.send_vehicle_command(400, 0.0, 10.0)
