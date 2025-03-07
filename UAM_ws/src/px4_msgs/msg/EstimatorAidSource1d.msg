@@ -11,12 +11,8 @@ float32 observation
 float32 observation_variance
 
 float32 innovation
-float32 innovation_filtered
-
 float32 innovation_variance
-
-float32 test_ratio           # normalized innovation squared
-float32 test_ratio_filtered  # signed filtered test ratio
+float32 test_ratio
 
 bool innovation_rejected     # true if the observation has been rejected
 bool fused                   # true if the sample was successfully fused
@@ -25,3 +21,4 @@ bool fused                   # true if the sample was successfully fused
 # TOPICS estimator_aid_src_airspeed estimator_aid_src_sideslip
 # TOPICS estimator_aid_src_fake_hgt
 # TOPICS estimator_aid_src_gnss_yaw estimator_aid_src_ev_yaw
+# TOPICS estimator_aid_src_terrain_range_finder

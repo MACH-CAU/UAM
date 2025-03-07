@@ -70,13 +70,13 @@ class DroneController(Node):
         elif self.state == "ARM" and self.arming_state != VehicleStatus.ARMING_STATE_ARMED:
             self.get_logger().info("Arming the drone...")
             self.send_vehicle_command(400, 1.0)  # VEHICLE_CMD_COMPONENT_ARM_DISARM (Arm)
-            time.sleep(5)# VEHICLE_CMD_DO_SET_MODE (Offboard 모드 설정)
-        elif self.state == "ARM" and self.arming_state == VehicleStatus.ARMING_STATE_ARMED:
-            self.state = "TAKEOFF"
-        elif self.state == "TAKEOFF" and self.arming_state == VehicleStatus.ARMING_STATE_ARMED:
-            self.get_logger().info("Taking off...")
-            self.send_vehicle_command(22, 0.0, 10.0) 
-            time.sleep(10)# VEHICLE_CMD_DO_SET_MODE (Offboard 모드 설정)
+        #     time.sleep(5)# VEHICLE_CMD_DO_SET_MODE (Offboard 모드 설정)
+        # elif self.state == "ARM" and self.arming_state == VehicleStatus.ARMING_STATE_ARMED:
+        #     self.state = "TAKEOFF"
+        # elif self.state == "TAKEOFF" and self.arming_state == VehicleStatus.ARMING_STATE_ARMED:
+        #     self.get_logger().info("Taking off...")
+        #     self.send_vehicle_command(22, 0.0, 10.0) 
+        #     time.sleep(10)# VEHICLE_CMD_DO_SET_MODE (Offboard 모드 설정)
 
 
             # if self.state == "TAKEOFF" and self.arming_state == VehicleStatus.ARMING_STATE_ARMED:

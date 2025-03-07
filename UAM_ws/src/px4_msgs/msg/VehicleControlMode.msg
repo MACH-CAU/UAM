@@ -1,5 +1,3 @@
-uint32 MESSAGE_VERSION = 0
-
 uint64 timestamp		# time since system start (microseconds)
 bool flag_armed			# synonym for actuator_armed.armed
 
