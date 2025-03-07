@@ -3,9 +3,8 @@ import rclpy
 from rclpy.node import Node
 from rclpy.clock import Clock
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy, QoSDurabilityPolicy
-
 from px4_msgs.msg import VehicleCommand, OffboardControlMode, TrajectorySetpoint, VehicleStatus
-
+import time
 class DroneController(Node):
     def __init__(self):
         super().__init__('drone_controller')
@@ -39,12 +38,12 @@ class DroneController(Node):
         self.nav_state = msg.nav_state
         self.arming_state = msg.arming_state
 
-    def send_vehicle_command(self, command, param1=0.0, param2=0.0):
+    def send_vehicle_command(self, command, param1=0.0, param7=0.0):
         """PX4에 VehicleCommand 메시지를 전송하는 함수"""
         msg = VehicleCommand()
         msg.timestamp = int(Clock().now().nanoseconds / 1000)
         msg.param1 = param1
-        msg.param2 = param2
+        msg.param7 = param7
         msg.command = command
         msg.target_system = 1
         msg.target_component = 1
@@ -52,7 +51,7 @@ class DroneController(Node):
         msg.source_component = 1
         msg.from_external = True
         self.command_publisher.publish(msg)
-        self.get_logger().info(f"Sent command: {command}, param1: {param1}, param2: {param2}")
+        self.get_logger().info(f"Sent command: {command}, param1: {param1}, param2: {param7}")
 
     def offboard_control_loop(self):
         """드론의 상태에 따라 Offboard, Arm, Takeoff 실행"""
@@ -60,29 +59,37 @@ class DroneController(Node):
     
         if self.state == "INIT":
         
-            if self.arming_state != VehicleStatus.ARMING_STATE_ARMED:
-                self.get_logger().info("Switching to OFFBOARD mode...")
-                self.send_vehicle_command(176, 1.0)  # VEHICLE_CMD_DO_SET_MODE (Offboard 모드 설정)
-                self.state = "ARM"
+            if self.arming_state == VehicleStatus.ARMING_STATE_ARMED:
+                self.get_logger().info("Switching to disarm...")
+                self.send_vehicle_command(400, 0.0, 10.0)
+                # time.sleep(5)# VEHICLE_CMD_DO_SET_MODE (Offboard 모드 설정)
+                # self.state = "ARM"
             else :
-                self.send_vehicle_command(400, 0.0) 
-
+                self.state = "ARM"
+                self.send_vehicle_command(400, 1.0, 10.0) 
+                time.sleep(5)# VEHICLE_CMD_DO_SET_MODE (Offboard 모드 설정)
+                
         elif self.state == "ARM" and self.arming_state != VehicleStatus.ARMING_STATE_ARMED:
             self.get_logger().info("Arming the drone...")
             self.send_vehicle_command(400, 1.0)  # VEHICLE_CMD_COMPONENT_ARM_DISARM (Arm)
+            time.sleep(5)# VEHICLE_CMD_DO_SET_MODE (Offboard 모드 설정)
         elif self.state == "ARM" and self.arming_state == VehicleStatus.ARMING_STATE_ARMED:
             self.state = "TAKEOFF"
         elif self.state == "TAKEOFF" and self.arming_state == VehicleStatus.ARMING_STATE_ARMED:
             self.get_logger().info("Taking off...")
-            self.send_vehicle_command(22, 100.0, 100.0) 
+            self.send_vehicle_command(22, 0.0, 10.0) 
+            time.sleep(10)# VEHICLE_CMD_DO_SET_MODE (Offboard 모드 설정)
+            self.send_vehicle_command(22, 0.0, 10.0) 
+            time.sleep(10)# VEHICLE_CMD_DO_SET_MODE (Offboard 모드 설정)
 
-            if self.state == "TAKEOFF" and self.arming_state == VehicleStatus.ARMING_STATE_ARMED:
 
-                trajectory_msg = TrajectorySetpoint()
-                trajectory_msg.position[0] = 0#self.radius * np.cos(self.theta)
-                trajectory_msg.position[1] = 0#self.radius * np.sin(self.theta)
-                trajectory_msg.position[2] = -5.0
-                self.trajectory_publisher.publish(trajectory_msg)
+            # if self.state == "TAKEOFF" and self.arming_state == VehicleStatus.ARMING_STATE_ARMED:
+
+            #     trajectory_msg = TrajectorySetpoint()
+            #     trajectory_msg.position[0] = 0#self.radius * np.cos(self.theta)
+            #     trajectory_msg.position[1] = 0#self.radius * np.sin(self.theta)
+            #     trajectory_msg.position[2] = -5.0
+            #     self.trajectory_publisher.publish(trajectory_msg)
             
             
 
