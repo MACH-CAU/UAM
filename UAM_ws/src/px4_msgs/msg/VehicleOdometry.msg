@@ -1,7 +1,4 @@
 # Vehicle odometry data. Fits ROS REP 147 for aerial vehicles
-
-uint32 MESSAGE_VERSION = 0
-
 uint64 timestamp		# time since system start (microseconds)
 uint64 timestamp_sample
 
