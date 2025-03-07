@@ -1,0 +1,3 @@
+[submodule "UAM_ws/UAM_ws/src/px4-ros2-interface-lib"]
+	path = UAM_ws/UAM_ws/src/px4-ros2-interface-lib
+	url = https://github.com/Auterion/px4-ros2-interface-lib.git
