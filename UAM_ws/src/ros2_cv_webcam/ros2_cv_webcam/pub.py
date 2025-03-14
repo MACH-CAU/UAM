@@ -11,9 +11,9 @@ class ImagePublisher(Node):
         super().__init__('image_publisher') # Node name
         
         qos_profile = QoSProfile(
-           reliability=QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT,  # UDP 기반, 손실 감수
-           durability=QoSDurabilityPolicy.RMW_QOS_POLICY_DURABILITY_VOLATILE,  # 최신 메시지만 유지 (구독 전 메시지 받을 필요 없음)
-           history=QoSHistoryPolicy.RMW_QOS_POLICY_HISTORY_KEEP_LAST,  # 최신 데이터 유지
+           reliability=QoSReliabilityPolicy.BEST_EFFORT,  # UDP 기반, 손실 감수
+           durability=QoSDurabilityPolicy.VOLATILE,  # 최신 메시지만 유지 (구독 전 메시지 받을 필요 없음)
+           history=QoSHistoryPolicy.KEEP_LAST,  # 최신 데이터 유지
            depth=100  # 최대한 많은 메시지 유지
         )
         
