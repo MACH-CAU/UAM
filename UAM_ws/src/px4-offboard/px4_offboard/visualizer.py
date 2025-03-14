@@ -47,7 +47,6 @@ from px4_msgs.msg import VehicleLocalPosition
 from px4_msgs.msg import VehicleGlobalPosition
 from geometry_msgs.msg import PoseStamped, Point
 from nav_msgs.msg import Path
-from visualization_msgs.msg import Marker
 
 
 
@@ -68,7 +67,7 @@ class PX4Visualizer(Node):
             self.vehicle_local_position_callback,
             qos_profile,
         )
-        self.global_position = self.create_subscription(
+        self.global_position_sub = self.create_subscription(
             VehicleGlobalPosition,
             "/fmu/out/vehicle_global_position",
             self.vehicle_global_position_callback,
