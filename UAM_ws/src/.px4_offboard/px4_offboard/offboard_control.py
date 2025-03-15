@@ -56,41 +56,47 @@ class DroneController(Node):
     def offboard_control_loop(self):
         """드론의 상태에 따라 Offboard, Arm, Takeoff 실행"""
   
-        if self.state == "INIT":
-            if self.arming_state == VehicleStatus.ARMING_STATE_ARMED:
-                self.get_logger().info("Switching to disarm...")
-                self.send_vehicle_command(400, 0.0, 10.0)
-                # time.sleep(5)# VEHICLE_CMD_DO_SET_MODE (Offboard 모드 설정)
-                # self.state = "ARM"
-            else :
-                self.state = "ARM"
-                self.send_vehicle_command(400, 1.0, 10.0) 
-                time.sleep(5)# VEHICLE_CMD_DO_SET_MODE (Offboard 모드 설정)
-                
-        elif self.state == "ARM" and self.arming_state != VehicleStatus.ARMING_STATE_ARMED:
-            self.get_logger().info("Arming the drone...")
-            self.send_vehicle_command(400, 1.0)  # VEHICLE_CMD_COMPONENT_ARM_DISARM (Arm)
-            time.sleep(5)# VEHICLE_CMD_DO_SET_MODE (Offboard 모드 설정)
-        elif self.state == "ARM" and self.arming_state == VehicleStatus.ARMING_STATE_ARMED:
-            self.state = "TAKEOFF"
-        elif self.state == "TAKEOFF" and self.arming_state == VehicleStatus.ARMING_STATE_ARMED:
-            self.get_logger().info("Taking off...")
-            self.send_vehicle_command(22, 0.0, 10.0) 
-            time.sleep(10)# VEHICLE_CMD_DO_SET_MODE (Offboard 모드 설정)
-
-
-            if self.state == "TAKEOFF" and self.arming_state == VehicleStatus.ARMING_STATE_ARMED:
-
-                trajectory_msg = TrajectorySetpoint()
-                trajectory_msg.position[0] = 0#self.radius * np.cos(self.theta)
-                trajectory_msg.position[1] = 0#self.radius * np.sin(self.theta)
-                trajectory_msg.position[2] = -5.0
-                self.trajectory_publisher.publish(trajectory_msg)
-            
-            
-
-        elif self.state == "HOLD":
-            self.get_logger().info("Holding position at 5m altitude.")
+        offboard_msg = OffboardControlMode()
+        offboard_msg.timestamp = int(Clock().now().nanoseconds / 1000)
+        offboard_msg.position=True
+        offboard_msg.velocity=False
+        offboard_msg.acceleration=False
+        self.offboard_publisher.publish(offboard_msg)
+        # if self.state == "INIT":
+        #     if self.arming_state == VehicleStatus.ARMING_STATE_ARMED:
+        #         self.get_logger().info("Switching to disarm...")
+        #         self.send_vehicle_command(400, 0.0, 10.0)
+        #         # time.sleep(5)# VEHICLE_CMD_DO_SET_MODE (Offboard 모드 설정)
+        #         # self.state = "ARM"
+        #     else :
+        #         self.state = "ARM"
+        #         self.send_vehicle_command(400, 1.0, 10.0) 
+        #         time.sleep(5)# VEHICLE_CMD_DO_SET_MODE (Offboard 모드 설정)
+        #         
+        # elif self.state == "ARM" and self.arming_state != VehicleStatus.ARMING_STATE_ARMED:
+        #     self.get_logger().info("Arming the drone...")
+        #     self.send_vehicle_command(400, 1.0)  # VEHICLE_CMD_COMPONENT_ARM_DISARM (Arm)
+        #     time.sleep(5)# VEHICLE_CMD_DO_SET_MODE (Offboard 모드 설정)
+        # elif self.state == "ARM" and self.arming_state == VehicleStatus.ARMING_STATE_ARMED:
+        #     self.state = "TAKEOFF"
+        # elif self.state == "TAKEOFF" and self.arming_state == VehicleStatus.ARMING_STATE_ARMED:
+        #     self.get_logger().info("Taking off...")
+        #     self.send_vehicle_command(22, 0.0, 10.0) 
+        #     time.sleep(10)# VEHICLE_CMD_DO_SET_MODE (Offboard 모드 설정)
+        #
+        #
+        #     if self.state == "TAKEOFF" and self.arming_state == VehicleStatus.ARMING_STATE_ARMED:
+        #
+        #         trajectory_msg = TrajectorySetpoint()
+        #         trajectory_msg.position[0] = 0#self.radius * np.cos(self.theta)
+        #         trajectory_msg.position[1] = 0#self.radius * np.sin(self.theta)
+        #         trajectory_msg.position[2] = -5.0
+        #         self.trajectory_publisher.publish(trajectory_msg)
+        #     
+        #     
+        #
+        # elif self.state == "HOLD":
+        #     self.get_logger().info("Holding position at 5m altitude.")
 
       
 def main(args=None):

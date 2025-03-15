@@ -4,3 +4,9 @@
 [submodule "UAM_ws/src/px4-ros2-interface-lib"]
 	path = UAM_ws/src/px4-ros2-interface-lib
 	url = https://github.com/Auterion/px4-ros2-interface-lib.git
+[submodule "UAM_ws/src/UAM_ws/src"]
+	path = UAM_ws/src/UAM_ws/src
+	url = https://github.com/ARK-Electronics/ROS2_PX4_Offboard_Example.git
+[submodule "UAM_ws/src/ROS2_PX4_Offboard_Example"]
+	path = UAM_ws/src/ROS2_PX4_Offboard_Example
+	url = https://github.com/ARK-Electronics/ROS2_PX4_Offboard_Example.git
