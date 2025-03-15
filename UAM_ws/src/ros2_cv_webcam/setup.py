@@ -13,15 +13,15 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='giromi',
-    maintainer_email='giromi@cau.ac.kr',
+    maintainer='haechan',
+    maintainer_email='eojin333c@gmail.com',
     description='TODO: Package description',
     license='TODO: License declaration',
-    tests_require=['pytest'],
+    # tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'img_publisher = ros2_cv_webcam.pub:main',
             'img_subscriber = ros2_cv_webcam.sub:main',
+            'img_publisher = ros2_cv_webcam.pub:main',
         ],
     },
 )

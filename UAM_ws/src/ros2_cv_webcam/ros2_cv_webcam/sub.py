@@ -3,17 +3,27 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 import cv2
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy, QoSDurabilityPolicy
+
 
 class ImageSubscriber(Node):
     def __init__(self):
         super().__init__('image_subscriber') # Node name
+        qos_profile = QoSProfile(
+            reliability=QoSReliabilityPolicy.BEST_EFFORT,  # UDP 기반, 손실 감수
+            durability=QoSDurabilityPolicy.VOLATILE,  # 최신 메시지만 유지 (구독 전 메시지 받을 필요 없음)
+            history=QoSHistoryPolicy.KEEP_LAST,  # 최신 데이터 유지
+            depth=100  # 최대한 많은 메시지 유지
+        )
         self.subscription=self.create_subscription(
             Image, # Message type
             'video_frames', # Topic name
             self.listener_callback,
-            10)
+            qos_profile
+        )
         self.subscription
         self.br=CvBridge()
+
 
     def listener_callback(self, data):
 
@@ -36,4 +46,3 @@ def main():
 
 if __name__=='__main__':
     main()
-
