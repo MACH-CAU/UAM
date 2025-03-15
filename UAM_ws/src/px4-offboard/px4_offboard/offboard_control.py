@@ -9,9 +9,9 @@ class DroneController(Node):
     def __init__(self):
         super().__init__('drone_controller')
         qos_profile = QoSProfile(
-            reliability=QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT,
-            durability=QoSDurabilityPolicy.RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL,
-            history=QoSHistoryPolicy.RMW_QOS_POLICY_HISTORY_KEEP_LAST,
+            reliability=QoSReliabilityPolicy.BEST_EFFORT,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            history=QoSHistoryPolicy.KEEP_LAST,
             depth=1
         )
 
@@ -56,9 +56,7 @@ class DroneController(Node):
     def offboard_control_loop(self):
         """드론의 상태에 따라 Offboard, Arm, Takeoff 실행"""
   
-    
         if self.state == "INIT":
-        
             if self.arming_state == VehicleStatus.ARMING_STATE_ARMED:
                 self.get_logger().info("Switching to disarm...")
                 self.send_vehicle_command(400, 0.0, 10.0)
@@ -79,17 +77,15 @@ class DroneController(Node):
             self.get_logger().info("Taking off...")
             self.send_vehicle_command(22, 0.0, 10.0) 
             time.sleep(10)# VEHICLE_CMD_DO_SET_MODE (Offboard 모드 설정)
-            self.send_vehicle_command(22, 0.0, 10.0) 
-            time.sleep(10)# VEHICLE_CMD_DO_SET_MODE (Offboard 모드 설정)
 
 
-            # if self.state == "TAKEOFF" and self.arming_state == VehicleStatus.ARMING_STATE_ARMED:
+            if self.state == "TAKEOFF" and self.arming_state == VehicleStatus.ARMING_STATE_ARMED:
 
-            #     trajectory_msg = TrajectorySetpoint()
-            #     trajectory_msg.position[0] = 0#self.radius * np.cos(self.theta)
-            #     trajectory_msg.position[1] = 0#self.radius * np.sin(self.theta)
-            #     trajectory_msg.position[2] = -5.0
-            #     self.trajectory_publisher.publish(trajectory_msg)
+                trajectory_msg = TrajectorySetpoint()
+                trajectory_msg.position[0] = 0#self.radius * np.cos(self.theta)
+                trajectory_msg.position[1] = 0#self.radius * np.sin(self.theta)
+                trajectory_msg.position[2] = -5.0
+                self.trajectory_publisher.publish(trajectory_msg)
             
             
 
