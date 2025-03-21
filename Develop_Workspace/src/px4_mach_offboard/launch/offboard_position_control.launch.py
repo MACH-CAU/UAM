@@ -42,17 +42,17 @@ import os
 
 
 def generate_launch_description():
-    package_dir = get_package_share_directory('px4_offboard')
+    package_dir = get_package_share_directory('px4_mach_offboard')
     return LaunchDescription([
         Node(
-            package='px4_offboard',
-            namespace='px4_offboard',
+            package='px4_mach_offboard',
+            namespace='px4_mach_offboard',
             executable='visualizer',
             name='visualizer'
         ),
         Node(
-            package='px4_offboard',
-            namespace='px4_offboard',
+            package='px4_mach_offboard',
+            namespace='px4_mach_offboard',
             executable='offboard_control',
             name='control',
             parameters= [{'radius': 10.0},{'altitude': 5.0},{'omega': 0.5}]

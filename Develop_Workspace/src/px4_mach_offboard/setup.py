@@ -26,8 +26,11 @@ setup(
     # tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-                'offboard_control = px4_offboard.offboard_control:main',
-                'visualizer = px4_offboard.visualizer:main',
+                'offboard_control = px4_mach_offboard.offboard_control:main',
+                'visualizer = px4_mach_offboard.visualizer:main',
+                'velocity_control = px4_mach_offboard.velocity_control:main',
+                'control = px4_mach_offboard.control:main',
+                'processes = px4_mach_offboard.processes:main'
         ],
     },
 )
