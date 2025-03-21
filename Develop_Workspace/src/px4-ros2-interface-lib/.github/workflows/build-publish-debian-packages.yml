@@ -1,0 +1,32 @@
+name: Build publish debian packages
+
+on:
+  release:
+    types: [published]
+  pull_request:
+    branches:
+      - '*'
+
+jobs:
+  build:
+    name: Build debian packages
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [{runner: buildjet-2vcpu-ubuntu-2204-arm, platform: linux/arm64}, {runner: buildjet-2vcpu-ubuntu-2204, platform: linux/amd64}]
+        distro:
+          - ubuntu: jammy
+            ros2: humble
+          - ubuntu: noble
+            ros2: rolling
+          - ubuntu: focal
+            ros2: foxy
+
+    uses: Auterion/ros-debian-workflow/.github/workflows/build-ros-debian.yml@main
+    with:
+      platform: ${{ matrix.platform.platform }}
+      ubuntu-distro: ${{ matrix.distro.ubuntu }}
+      ros2-distro: ${{ matrix.distro.ros2 }}
+      runner: ${{ matrix.platform.runner }}
+      source-prefix: px4_ros2_cpp
+    secrets: inherit
