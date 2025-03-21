@@ -2,7 +2,7 @@ import os
 from glob import glob
 from setuptools import setup
 
-package_name = 'px4_offboard'
+package_name = 'px4_mach_offboard'
 
 setup(
     name=package_name,

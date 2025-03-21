@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>px4_offboard</name>
+  <name>px4_mach_offboard</name>
   <version>0.0.0</version>
   <description>ROS2 python interface for px4</description>
   <maintainer email="jalim@ethz.ch">jaeyoung</maintainer>
