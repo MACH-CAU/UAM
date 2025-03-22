@@ -103,8 +103,10 @@ def main():
 
     arm_toggle = False
     land_toggle = False
+    mission_toggle = False
     arm_pub = node.create_publisher(std_msgs.msg.Bool, '/arm_message', qos_profile)
     land_pub = node.create_publisher(std_msgs.msg.Bool, '/land_message', qos_profile)
+    mission_pub = node.create_publisher(std_msgs.msg.Bool, '/mission_message', qos_profile)
 
 
     speed = 0.5
@@ -145,14 +147,20 @@ def main():
                 arm_pub.publish(arm_msg)
                 print(f"Arm toggle is now: {arm_toggle}")
             elif key == 'l':
-                # if land_toggle:
-                #     print('Already landed')
-                #     continue
                 land_toggle = not land_toggle
                 land_msg = std_msgs.msg.Bool()
                 land_msg.data = land_toggle
                 land_pub.publish(land_msg)
                 print(f"Land toggle is now: {land_toggle}")
+            elif key == 'm':
+                mission_toggle = not mission_toggle
+                mission_msg = std_msgs.msg.Bool()
+                mission_msg.data = mission_toggle
+                mission_pub.publish(mission_msg)
+                if mission_toggle:
+                    print("Mission Enabled")
+                else:
+                    print("Mission Disabled")
 
 
             twist = geometry_msgs.msg.Twist()
