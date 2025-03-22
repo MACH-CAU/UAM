@@ -130,7 +130,9 @@ class OffboardControl(Node):
 
         match self.current_state:
             case "IDLE":
-                if(self.flightCheck and self.arm_message == True):
+                if (self.flightCheck and self.land_message == True):
+                    self.get_logger().info(f"Landing")
+                elif(self.flightCheck and self.arm_message == True):
                     self.current_state = "ARMING"
                     self.get_logger().info(f"Arming")
 

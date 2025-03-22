@@ -102,7 +102,9 @@ def main():
     pub = node.create_publisher(geometry_msgs.msg.Twist, '/offboard_velocity_cmd', qos_profile)
 
     arm_toggle = False
+    land_toggle = False
     arm_pub = node.create_publisher(std_msgs.msg.Bool, '/arm_message', qos_profile)
+    land_pub = node.create_publisher(std_msgs.msg.Bool, '/land_message', qos_profile)
 
 
     speed = 0.5
@@ -142,6 +144,16 @@ def main():
                 arm_msg.data = arm_toggle
                 arm_pub.publish(arm_msg)
                 print(f"Arm toggle is now: {arm_toggle}")
+            elif key == 'l':
+                # if land_toggle:
+                #     print('Already landed')
+                #     continue
+                land_toggle = not land_toggle
+                land_msg = std_msgs.msg.Bool()
+                land_msg.data = land_toggle
+                land_pub.publish(land_msg)
+                print(f"Land toggle is now: {land_toggle}")
+
 
             twist = geometry_msgs.msg.Twist()
             
