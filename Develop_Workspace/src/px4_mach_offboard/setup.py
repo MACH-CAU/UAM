@@ -30,7 +30,8 @@ setup(
                 'visualizer = px4_mach_offboard.visualizer:main',
                 'velocity_control = px4_mach_offboard.velocity_control:main',
                 'control = px4_mach_offboard.control:main',
-                'processes = px4_mach_offboard.processes:main'
+                'processes = px4_mach_offboard.processes:main',
+                'location = px4_mach_offboard.location:main'
         ],
     },
 )

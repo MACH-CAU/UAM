@@ -34,14 +34,10 @@ class PathHandler:
         # self.path_x_list, self.path_y_list, self.path_yaw_list = [], [], []
         # self.path_x, self.path_y, self.path_yaw = np.empty((0,)), np.empty((0,)), np.empty((0,))   # 크기가 0인 객체 배열, [], []
         for i in range(len(self.path) - 1):
-            print(f"i: {i}")
-            print(f"self.path[i]: {self.path[i]}")
             path_planner = self.PathPlanner(self.path[i], self.path[i + 1])
             # TODO 현재 경로 포함해서 줘야 함 다음 경로 ㄴㄴ
             cal_path = path_planner.plan() 
-            print('cal_path : ', cal_path)
             self.new_path = np.vstack([self.new_path, cal_path])
-            print(self.new_path)
 
         return self.new_path
 
