@@ -9,7 +9,7 @@ from .middle_point_planner import MiddlePointPlanner
 import numpy as np
 
 
-class PathHanlder:
+class PathHandler:
 
     '''
     @param path: list of Waypoint
@@ -42,9 +42,6 @@ class PathHanlder:
             print('cal_path : ', cal_path)
             self.new_path = np.vstack([self.new_path, cal_path])
             print(self.new_path)
-        
-
-
 
         return self.new_path
 
@@ -58,7 +55,7 @@ if __name__ == '__main__':
     ])
 
     
-    # path_handler = PathHanlder(waypoints, DummyPlanner)
+    # path_handldler:PathHanlder(waypoints, DummyPlanner)
     path_handler = PathHanlder(waypoints, MiddlePointPlanner)
     path_handler.print_path()
     new_path = path_handler.make_path()
