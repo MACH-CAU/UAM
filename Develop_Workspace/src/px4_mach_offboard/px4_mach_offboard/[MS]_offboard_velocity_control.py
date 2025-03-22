@@ -103,11 +103,6 @@ class OffboardControl(Node):
         self.current_state = "IDLE"
         self.last_state = self.current_state
 
-        self.waypoints = np.array([ # Latitude, Longitude, Altitude, Yaw
-                [37.5478915, 127.1194249, 20, float('nan')],
-                [37.5474712, 127.1186771, 20, float('nan')],
-                [37.5468944, 127.1186654, 20, float('nan')],
-            ])
 
     def arm_message_callback(self, msg):
         self.arm_message = msg.data
@@ -179,7 +174,7 @@ class OffboardControl(Node):
                 elif(self.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_LAND):
                     self.current_state = "IDLE"
                     self.get_logger().info(f"Land, Idle")
-                else:
+                else: # AUTO_LAND 아닐 때
                     self.land()
                     self.offboardMode = False
                 self.get_logger().info(f"Land, Land Message: {self.land_message}")
@@ -307,40 +302,40 @@ class OffboardControl(Node):
         #trueYaw is the drones current yaw value
         self.trueYaw = -(np.arctan2(2.0*(orientation_q[3]*orientation_q[0] + orientation_q[1]*orientation_q[2]), 
                                   1.0 - 2.0*(orientation_q[0]*orientation_q[0] + orientation_q[1]*orientation_q[1])))
-
         
     #publishes offboard control modes and velocity as trajectory setpoints
     def cmdloop_callback(self):
         if(self.offboardMode == True):
             # Publish offboard control modes
-            self.offboard_msg_publish()
-            self.trajectory_msg_publish()
+            offboard_msg = OffboardControlMode()
+            offboard_msg.timestamp = int(Clock().now().nanoseconds / 1000)
+            offboard_msg.position = False
+            offboard_msg.velocity = True
+            offboard_msg.acceleration = False
+            self.publisher_offboard_mode.publish(offboard_msg)            
 
+            # Compute velocity in the world frame
+            cos_yaw = np.cos(self.trueYaw)
+            sin_yaw = np.sin(self.trueYaw)
+            velocity_world_x = (self.velocity.x * cos_yaw - self.velocity.y * sin_yaw)
+            velocity_world_y = (self.velocity.x * sin_yaw + self.velocity.y * cos_yaw)
 
-    def offboard_msg_publish(self):
-        offboard_msg = OffboardControlMode()
-        offboard_msg.timestamp = int(Clock().now().nanoseconds / 1000)
-        offboard_msg.position = True 
-        offboard_msg.velocity = False 
-        offboard_msg.acceleration = False
-        self.publisher_offboard_mode.publish(offboard_msg)            
+            # Create and publish TrajectorySetpoint message with NaN values for position and acceleration
+            trajectory_msg = TrajectorySetpoint()
+            trajectory_msg.timestamp = int(Clock().now().nanoseconds / 1000)
+            trajectory_msg.velocity[0] = velocity_world_x
+            trajectory_msg.velocity[1] = velocity_world_y
+            trajectory_msg.velocity[2] = self.velocity.z
+            trajectory_msg.position[0] = float('nan')
+            trajectory_msg.position[1] = float('nan')
+            trajectory_msg.position[2] = float('nan')
+            trajectory_msg.acceleration[0] = float('nan')
+            trajectory_msg.acceleration[1] = float('nan')
+            trajectory_msg.acceleration[2] = float('nan')
+            trajectory_msg.yaw = float('nan')
+            trajectory_msg.yawspeed = self.yaw
 
-
-    def trajectory_msg_publish(self):
-        trajectory_msg = TrajectorySetpoint()
-        trajectory_msg.timestamp = int(Clock().now().nanoseconds / 1000)
-        trajectory_msg.position[0] = float('nan')
-        trajectory_msg.position[1] = float('nan')
-        trajectory_msg.position[2] = float('nan')
-        trajectory_msg.velocity[0] = float('nan')
-        trajectory_msg.velocity[1] = float('nan')
-        trajectory_msg.velocity[2] = float('nan')
-        trajectory_msg.acceleration[0] = float('nan')
-        trajectory_msg.acceleration[1] = float('nan')
-        trajectory_msg.acceleration[2] = float('nan')
-        trajectory_msg.yaw = self.yaw
-        trajectory_msg.yawspeed = 0.0
-        self.publisher_trajectory.publish(trajectory_msg)
+            self.publisher_trajectory.publish(trajectory_msg)
 
 
 def main(args=None):

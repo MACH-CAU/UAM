@@ -46,12 +46,12 @@ def generate_launch_description():
     # bash_script_path = os.path.join(package_dir, 'scripts', 'TerminatorScript.sh')
     return LaunchDescription([
         # ExecuteProcess(cmd=['bash', bash_script_path], output='screen'),
-        Node(
-            package='px4_mach_offboard',
-            namespace='px4_mach_offboard',
-            executable='visualizer',
-            name='visualizer'
-        ),
+        # Node(
+        #     package='px4_mach_offboard',
+        #     namespace='px4_mach_offboard',
+        #     executable='visualizer',
+        #     name='visualizer'
+        # ),
         Node(
             package='px4_mach_offboard',
             namespace='px4_mach_offboard',
