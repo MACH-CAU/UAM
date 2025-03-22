@@ -11,7 +11,11 @@ commands = [
     "MicroXRCEAgent udp4 -p 8888",
 
     # Run the PX4 SITL simulation
-    "cd ~/Repos/PX4-Autopilot && make px4_sitl gazebo-classic_standard_vtol",
+    "cd ~/Repos/PX4-Autopilot && \
+    PX4_HOME_LAT=37.546718              \
+    PX4_HOME_LON=127.119070             \
+    PX4_HOME_ALT=0                      \
+    make px4_sitl gazebo-classic_standard_vtol",
 
     # Run QGroundControl
     # "cd ~/QGroundControl && ./QGroundControl.AppImage"
