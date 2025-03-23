@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 
+__author__ = "Braden Wagstaff"
+__contact__ = "braden@arkelectron.com"
 
 import rclpy
 from rclpy.node import Node
@@ -7,22 +9,22 @@ import numpy as np
 from rclpy.clock import Clock
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy, QoSDurabilityPolicy
 
-from px4_msgs.msg import OffboardControlMode,                    \
-                         TrajectorySetpoint, TrajectoryWaypoint, \
-                         VehicleStatus, VehicleCommand,          \
-                         VehicleGlobalPosition, VehicleAttitude
+from px4_msgs.msg import OffboardControlMode
+from px4_msgs.msg import TrajectorySetpoint
+from px4_msgs.msg import VehicleStatus
+from px4_msgs.msg import VehicleAttitude
+from px4_msgs.msg import VehicleCommand
+from px4_msgs.msg import VehicleGlobalPosition
 from geometry_msgs.msg import Twist, Vector3
 from math import pi
-import math
 from std_msgs.msg import Bool
-from .lib  import PathHandler, DummyPlanner, MiddlePointPlanner, \
-                LAT, LON, ALT, YAW
-import json
+
 
 class OffboardControl(Node):
 
     def __init__(self):
-        super().__init__('offboard_control')
+        super().__init__(node_name='minimal_publisher')
+
         qos_profile = QoSProfile(
             reliability=QoSReliabilityPolicy.BEST_EFFORT,
             durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
@@ -90,7 +92,6 @@ class OffboardControl(Node):
         self.nav_state = VehicleStatus.NAVIGATION_STATE_MAX
         self.arm_state = VehicleStatus.ARMING_STATE_ARMED
         self.velocity = Vector3()
-        self.cur_waypoint_index = 0
         self.yaw = 0.0  #yaw value we send as command
         self.trueYaw = 0.0  #current yaw value of drone
         self.offboardMode = False
@@ -101,23 +102,7 @@ class OffboardControl(Node):
         self.failsafe = False
         self.current_state = "IDLE"
         self.last_state = self.current_state
-        self.global_position = np.empty((0, 4))
-        self.takeoff_position = np.empty((0, 4))
 
-        # self.declare_parameter('waypoint_list', [])
-        # self.declare_parameter('takeoff_altitude', 0.0)
-
-        # waypoints_str = self.get_parameter('waypoints').get_parameter_value().string_value
-        # waypoint_list = json.loads(waypoints_str)  # 문자열을 파이썬 리스트로 변환
-        waypoint_list = [
-            [37.5478915, 127.1194249, 20.0, float('nan')],
-            [37.5474712, 127.1186771, 20.0, float('nan')],
-            [37.5468944, 127.1186654, 20.0, float('nan')],
-            [37.5467255, 127.1190820, 20.0, float('nan')]
-        ] 
-        # self.takeoff_altitude = self.get_parameter('altitude').value
-        self.waypoints = np.array(waypoint_list)
-        self.path = PathHandler(self.waypoints, DummyPlanner).make_path() # DummyPlanner or MiddlePointPlanner
 
     def arm_message_callback(self, msg):
         self.arm_message = msg.data
@@ -159,7 +144,6 @@ class OffboardControl(Node):
                 elif(self.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_TAKEOFF):
                     self.current_state = "LOITER"
                     self.get_logger().info(f"Takeoff, Loiter")
-                    self.takeoff_position = self.global_position
                 self.arm() #send arm command
                 self.take_off() #send takeoff command
 
@@ -190,7 +174,7 @@ class OffboardControl(Node):
                 elif(self.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_LAND):
                     self.current_state = "IDLE"
                     self.get_logger().info(f"Land, Idle")
-                else:
+                else: # AUTO_LAND 아닐 때
                     self.land()
                     self.offboardMode = False
                 self.get_logger().info(f"Land, Land Message: {self.land_message}")
@@ -276,7 +260,7 @@ class OffboardControl(Node):
 
     def global_position_callback(self, msg):
         # self.get_logger().info(f"Global Position: {msg.lat} {msg.lon} {msg.alt}")
-        self.global_position = np.array([msg.lat, msg.lon, msg.alt, float('nan')])
+        self.global_position = msg
 
     #receives and sets vehicle status values 
     def vehicle_status_callback(self, msg):
@@ -318,80 +302,40 @@ class OffboardControl(Node):
         #trueYaw is the drones current yaw value
         self.trueYaw = -(np.arctan2(2.0*(orientation_q[3]*orientation_q[0] + orientation_q[1]*orientation_q[2]), 
                                   1.0 - 2.0*(orientation_q[0]*orientation_q[0] + orientation_q[1]*orientation_q[1])))
-
         
     #publishes offboard control modes and velocity as trajectory setpoints
     def cmdloop_callback(self):
-        if (self.offboardMode == False):
-            return
+        if(self.offboardMode == True):
+            # Publish offboard control modes
+            offboard_msg = OffboardControlMode()
+            offboard_msg.timestamp = int(Clock().now().nanoseconds / 1000)
+            offboard_msg.position = False
+            offboard_msg.velocity = True
+            offboard_msg.acceleration = False
+            self.publisher_offboard_mode.publish(offboard_msg)            
 
-        # Publish offboard control modes
-        self.offboard_msg_publish()
-        self.trajectory_msg_publish()
+            # Compute velocity in the world frame
+            cos_yaw = np.cos(self.trueYaw)
+            sin_yaw = np.sin(self.trueYaw)
+            velocity_world_x = (self.velocity.x * cos_yaw - self.velocity.y * sin_yaw)
+            velocity_world_y = (self.velocity.x * sin_yaw + self.velocity.y * cos_yaw)
 
+            # Create and publish TrajectorySetpoint message with NaN values for position and acceleration
+            trajectory_msg = TrajectorySetpoint()
+            trajectory_msg.timestamp = int(Clock().now().nanoseconds / 1000)
+            trajectory_msg.velocity[0] = velocity_world_x
+            trajectory_msg.velocity[1] = velocity_world_y
+            trajectory_msg.velocity[2] = self.velocity.z
+            trajectory_msg.position[0] = float('nan')
+            trajectory_msg.position[1] = float('nan')
+            trajectory_msg.position[2] = float('nan')
+            trajectory_msg.acceleration[0] = float('nan')
+            trajectory_msg.acceleration[1] = float('nan')
+            trajectory_msg.acceleration[2] = float('nan')
+            trajectory_msg.yaw = float('nan')
+            trajectory_msg.yawspeed = self.yaw
 
-    def offboard_msg_publish(self):
-        offboard_msg = OffboardControlMode()
-        offboard_msg.timestamp = int(Clock().now().nanoseconds / 1000)
-        offboard_msg.position = True 
-        offboard_msg.velocity = False 
-        offboard_msg.acceleration = False
-        self.publisher_offboard_mode.publish(offboard_msg)            
-
-    def trajectory_msg_publish(self):
-        trajectory_msg = TrajectorySetpoint()
-        trajectory_msg.timestamp = int(Clock().now().nanoseconds / 1000)
-        north_offset, east_offset = \
-                               self.calculate_local_offset(self.takeoff_position[LAT], self.takeoff_position[LON], 
-                               self.path[self.cur_waypoint_index][LAT], self.path[self.cur_waypoint_index][LON])
-        trajectory_msg.position[0] = north_offset
-        trajectory_msg.position[1] = east_offset
-        trajectory_msg.position[2] = -self.path[self.cur_waypoint_index][ALT]
-
-        # trajectory_msg.velocity[0] = float('nan')
-        # trajectory_msg.velocity[1] = float('nan')
-        # trajectory_msg.velocity[2] = float('nan')
-        # trajectory_msg.acceleration[0] = float('nan')
-        # trajectory_msg.acceleration[1] = float('nan')
-        # trajectory_msg.acceleration[2] = float('nan')
-        # trajectory_msg.yaw = self.yaw
-        # trajectory_msg.yawspeed = 0.0
-        self.publisher_trajectory.publish(trajectory_msg)
-        norm = self.haversine(self.global_position[LAT], self.global_position[LON], self.path[self.cur_waypoint_index][LAT], self.path[self.cur_waypoint_index][LON])
-        if norm < 0.1:
-            self.cur_waypoint_index += 1 if self.cur_waypoint_index < len(self.path) - 1 else 0
-        self.get_logger().info(f"Global Position: {self.global_position}")
-        self.get_logger().info(f"trajectory_msg: {trajectory_msg.position}")
-        self.get_logger().info(f"Distance: {norm}")
-        self.get_logger().info(f"Waypoint: {self.cur_waypoint_index + 1}")
-    import math
-
-    def haversine(self, lat1, lon1, lat2, lon2):
-        # 지구 반지름 (미터 단위)
-        R = 6371000  
-        phi1, phi2 = math.radians(lat1), math.radians(lat2)
-        delta_phi = math.radians(lat2 - lat1)
-        delta_lambda = math.radians(lon2 - lon1)
-
-        a = math.sin(delta_phi / 2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2)**2
-        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-        distance = R * c
-        return distance  # 결과는 미터 단위
-
-    def calculate_local_offset(self, lat1, lon1, lat2, lon2):
-        # 현재 위치에서 북쪽으로 얼마나 떨어져 있는지
-        north = self.haversine(lat1, lon1, lat2, lon1)
-        # 현재 위치에서 동쪽으로 얼마나 떨어져 있는지
-        east = self.haversine(lat1, lon1, lat1, lon2)
-
-        # 남쪽 또는 서쪽으로의 이동에 대한 방향 조정
-        if lat2 < lat1:
-            north = -north
-        if lon2 < lon1:
-            east = -east
-
-        return north, east
+            self.publisher_trajectory.publish(trajectory_msg)
 
 
 def main(args=None):
