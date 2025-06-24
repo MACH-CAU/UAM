@@ -8,7 +8,9 @@ from rclpy.clock import Clock
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy, QoSDurabilityPolicy
 
 from px4_msgs.msg import OffboardControlMode,                           \
-                         TrajectorySetpoint,                            \
+                         TrajectorySetpoint, TrajectoryWaypoint,        \
+                         VehicleTrajectoryWaypoint,                     \
+                         VehicleTrajectoryBezier,                       \
                          VehicleStatus, VehicleCommand,                 \
                          VehicleGlobalPosition, VehicleLocalPosition,   \
                          VehicleAttitude
@@ -83,10 +85,18 @@ class OffboardControl(Node):
             qos_profile)
         
         #Create publishers
-        self.publisher_offboard_mode = self.create_publisher(OffboardControlMode, '/fmu/in/offboard_control_mode', qos_profile)
-        self.publisher_velocity = self.create_publisher(Twist, '/fmu/in/setpoint_velocity/cmd_vel_unstamped', qos_profile)
-        self.publisher_trajectory = self.create_publisher(TrajectorySetpoint, '/fmu/in/trajectory_setpoint', qos_profile)
-        self.vehicle_command_publisher_ = self.create_publisher(VehicleCommand, "/fmu/in/vehicle_command", 10)
+        self.publisher_offboard_mode \
+            = self.create_publisher(OffboardControlMode, '/fmu/in/offboard_control_mode', qos_profile)
+        self.publisher_velocity \
+            = self.create_publisher(Twist, '/fmu/in/setpoint_velocity/cmd_vel_unstamped', qos_profile)
+        self.publisher_trajectory \
+            = self.create_publisher(TrajectorySetpoint, '/fmu/in/trajectory_setpoint', qos_profile)
+        self.publisher_vehicle_trajectory_waypoint \
+            = self.create_publisher(VehicleTrajectoryWaypoint, '/fmu/in/vehicle_trajectory_waypoint', qos_profile)
+        self.publisher_vehicle_trajectory_bezier \
+            = self.create_publisher(VehicleTrajectoryBezier, '/fmu/in/vehicle_trajectory_bezier', qos_profile)
+        self.publisher_vehicle_command \
+            = self.create_publisher(VehicleCommand, "/fmu/in/vehicle_command", 10)
 
         
         #creates callback function for the arm timer
@@ -131,6 +141,7 @@ class OffboardControl(Node):
         self.last_state             = self.current_state
         self.global_position        = np.array([np.nan, np.nan, np.nan, np.nan])
         self.takeoff_position       = np.array([np.nan, np.nan, np.nan, np.nan])
+        self.waypoint_sent          = False     # waypoint가 전송되었는지 여부
 
         self.declare_parameter('takeoff_altitude', 0.0)
 
@@ -234,8 +245,17 @@ class OffboardControl(Node):
                     if(self.in_transition_mode == True):# and self.in_transition_to_fw == True):
                         self.mission_progress = 2
                     elif(self.mission_progress == 2 and self.in_transition_mode == False):#and self.in_transition_to_fw == False):
-                        self.current_state = "OFFBOARD"
+                        self.current_state = "POSCTL"
                         self.get_logger().info(f"VTOL transition complete (MC → FW). Offboard mode enabled.")
+            case "POSCTL":
+                if(not(self.pre_flight_checks_pass)):
+                    self.current_state = "IDLE"
+                    self.get_logger().info(f"Position Control, Flight Check Failed")
+                # elif(self.nav_state == VehicleStatus.NAVIGATION_STATE_POSCTL):
+                #     self.current_state = "OFFBOARD"
+                #     self.get_logger().info(f"Position Control, Offboard")
+                self.state_posctl()
+
 
             case "OFFBOARD":
                 if(not(self.pre_flight_checks_pass) 
@@ -301,6 +321,16 @@ class OffboardControl(Node):
         }
         self.myCnt = 0
         self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, param_dict)
+
+    def state_posctl(self):
+        ''' Position Control Mode '''
+        param_dict = {
+            "param1": 1.0,  # Mode
+            "param2": 3.0,  # Mode
+        }
+        self.myCnt = 0
+        self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, param_dict)
+        self.get_logger().info("Position Control Mode command send")
 
     ''' 잘 안됨 '''
     def param_MIS_TAKEOFF_ALT(self):
@@ -371,7 +401,7 @@ class OffboardControl(Node):
         msg.source_component = 1  # component sending the command
         msg.from_external = True
         msg.timestamp = int(Clock().now().nanoseconds / 1000) # time in microseconds
-        self.vehicle_command_publisher_.publish(msg)
+        self.publisher_vehicle_command.publish(msg)
 
     def global_position_callback(self, msg):
         # self.get_logger().info(f"Global Position: {msg.lat} {msg.lon} {msg.alt}")
@@ -449,10 +479,11 @@ class OffboardControl(Node):
 
         self.offboard_msg_publish()
         # if (self.mission_message == False):
-        #     self.hover_msg_publish()
+        # self.hover_msg_publish()
         # else:
-        self.trajectory_msg_publish()
-
+        # if self.waypoint_sent == False:
+        #     self.vehcile_trajectory_waypoint_msg_publish()
+        #     self.waypoint_sent = True
 
     def offboard_msg_publish(self):
         offboard_msg = OffboardControlMode()
@@ -471,6 +502,8 @@ class OffboardControl(Node):
         trajectory_msg.position[LON] = self.local_position[LON]
         trajectory_msg.position[ALT] = -self.takeoff_position[ALT]
         self.publisher_trajectory.publish(trajectory_msg)
+
+
 
     def trajectory_msg_publish(self):
         trajectory_msg = TrajectorySetpoint()
@@ -495,6 +528,30 @@ class OffboardControl(Node):
             self.cur_waypoint_index += 1 if self.cur_waypoint_index < len(self.path) - 1 else 0
         self.get_logger().info(f"Distance: {norm} [m]")
         self.get_logger().info(f"Waypoint: {self.cur_waypoint_index + 1}")
+
+
+    def vehcile_trajectory_waypoint_msg_publish(self):
+        msg = VehicleTrajectoryWaypoint()
+        msg.timestamp = int(Clock().now().nanoseconds / 1000)
+        msg.type = VehicleTrajectoryWaypoint.MAV_TRAJECTORY_REPRESENTATION_WAYPOINTS
+        self.get_logger().info(f"Vehicle Trajectory Waypoint: {len(self.path)} waypoints")
+        for i in range(len(self.path)):
+            wp = TrajectoryWaypoint()
+            north_offset, east_offset = \
+                               self.calculate_local_offset(self.takeoff_position[LAT], self.takeoff_position[LON], 
+                               self.path[self.cur_waypoint_index][LAT], self.path[self.cur_waypoint_index][LON])
+            wp.position = [
+                north_offset,
+                east_offset,
+                -self.path[i][ALT],  # 고도 음수로 (ENU 기준)
+            ]
+            wp.point_valid = True
+            msg.waypoints[i] = wp
+            # msg.waypoints.yaw = self.path[i][YAW]
+        self.publisher_vehicle_trajectory_waypoint.publish(msg)
+
+
+
 
     def haversine(self, lat1, lon1, lat2, lon2):
         # 지구 반지름 (미터 단위)
