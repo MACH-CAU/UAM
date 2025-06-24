@@ -7,11 +7,10 @@ import numpy as np
 from rclpy.clock import Clock
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy, QoSDurabilityPolicy
 
-from px4_msgs.msg import OffboardControlMode,                           \
-                         TrajectorySetpoint,                            \
-                         VehicleStatus, VehicleCommand,                 \
-                         VehicleGlobalPosition, VehicleLocalPosition,   \
-                         VehicleAttitude
+from px4_msgs.msg import OffboardControlMode,                    \
+                         TrajectorySetpoint, TrajectoryWaypoint, \
+                         VehicleStatus, VehicleCommand,          \
+                         VehicleGlobalPosition, VehicleAttitude
 from geometry_msgs.msg import Twist, Vector3
 from math import pi
 import math
@@ -49,19 +48,6 @@ class OffboardControl(Node):
             '/fmu/out/vehicle_attitude',
             self.attitude_callback,
             qos_profile)
-
-        self.local_position_sub = self.create_subscription(
-            VehicleLocalPosition,
-            "/fmu/out/vehicle_local_position",
-            self.local_position_callback,
-            qos_profile,
-        )
-
-        self.global_position_sub = self.create_subscription(
-            VehicleGlobalPosition,
-            '/fmu/out/vehicle_global_position',
-            self.global_position_callback,
-            qos_profile)
         
         self.my_arm_bool_sub = self.create_subscription(
             Bool,
@@ -75,12 +61,14 @@ class OffboardControl(Node):
             self.land_message_callback,
             qos_profile)
         
-        self.my_offboard_bool_sub = self.create_subscription(
-            Bool,
-            '/mission_message',
-            self.mission_message_callback,
+        self.global_position_sub = self.create_subscription(
+            VehicleGlobalPosition,
+            '/fmu/out/vehicle_global_position',
+            self.global_position_callback,
             qos_profile)
-        
+
+
+
         #Create publishers
         self.publisher_offboard_mode = self.create_publisher(OffboardControlMode, '/fmu/in/offboard_control_mode', qos_profile)
         self.publisher_velocity = self.create_publisher(Twist, '/fmu/in/setpoint_velocity/cmd_vel_unstamped', qos_profile)
@@ -110,17 +98,15 @@ class OffboardControl(Node):
         self.myCnt = 0
         self.arm_message = False
         self.land_message = False
-        self.mission_message = False
         self.failsafe = False
         self.current_state = "IDLE"
         self.last_state = self.current_state
-        self.global_position = np.array([np.nan, np.nan, np.nan, np.nan])
-        self.takeoff_position = np.array([np.nan, np.nan, np.nan, np.nan])
+        self.global_position = np.empty((0, 4))
+        self.takeoff_position = np.empty((0, 4))
 
-        self.declare_parameter('takeoff_altitude', 0.0)
-
-        self.takeoff_altitude = self.get_parameter('takeoff_altitude').value
         # self.declare_parameter('waypoint_list', [])
+        # self.declare_parameter('takeoff_altitude', 0.0)
+
         # waypoints_str = self.get_parameter('waypoints').get_parameter_value().string_value
         # waypoint_list = json.loads(waypoints_str)  # 문자열을 파이썬 리스트로 변환
         waypoint_list = [
@@ -140,19 +126,18 @@ class OffboardControl(Node):
     def land_message_callback(self, msg):
         self.land_message = msg.data
         self.get_logger().info(f"Land Message: {self.land_message}")
-
-    def mission_message_callback(self, msg):
-        self.mission_message = msg.data
-        self.get_logger().info(f"Mission Message: {self.mission_message}")
     #callback function that arms, takes off, and switches to offboard mode
     #implements a finite state machine
     def arm_timer_callback(self):
+
         match self.current_state:
             case "IDLE":
                 if (self.flightCheck and self.land_message == True):
                     # self.get_logger().info(f"Landing")
                     if (self.arm_state == VehicleStatus.ARMING_STATE_DISARMED):
                         self.land_message = False
+                        # self.return_to_launch()
+                        # self.disarm()
                         pass
                 elif(self.flightCheck and self.arm_message == True):
                     self.current_state = "ARMING"
@@ -174,10 +159,7 @@ class OffboardControl(Node):
                 elif(self.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_TAKEOFF):
                     self.current_state = "LOITER"
                     self.get_logger().info(f"Takeoff, Loiter")
-                    self.takeoff_position[LAT] = self.global_position[LAT]
-                    self.takeoff_position[LON] = self.global_position[LON]
-                    self.takeoff_position[ALT] = self.takeoff_altitude
-                self.param_MIS_TAKEOFF_ALT() #send takeoff altitude command
+                    self.takeoff_position = self.global_position
                 self.arm() #send arm command
                 self.take_off() #send takeoff command
 
@@ -193,13 +175,10 @@ class OffboardControl(Node):
                 self.arm()
 
             case "OFFBOARD":
-                if(not(self.flightCheck) 
-                   or self.arm_state != VehicleStatus.ARMING_STATE_ARMED 
-                   or self.failsafe == True):
+                if(not(self.flightCheck) or self.arm_state != VehicleStatus.ARMING_STATE_ARMED or self.failsafe == True):
                     self.current_state = "IDLE"
                     self.get_logger().info(f"Offboard, Flight Check Failed")
-                elif(self.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD 
-                     and self.land_message == True):
+                elif(self.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD and self.land_message == True):
                     self.current_state = "LAND"
                     self.get_logger().info(f"Land, Idle")
                 self.state_offboard()
@@ -235,16 +214,6 @@ class OffboardControl(Node):
         self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, param_dict)
         self.offboardMode = True   
 
-    ''' 잘 안됨 '''
-    def param_MIS_TAKEOFF_ALT(self):
-        param_dict = {
-            "param1": 1028.0,  # Parameter index
-            "param2": 0.1,  # Parameter value
-        }
-
-        self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_PARAMETER, param_dict)
-        self.get_logger().info("MIS_TAKEOFF_ALT command send")
-
     # Arms the vehicle
     def arm(self):
         param_dict = { 
@@ -264,14 +233,14 @@ class OffboardControl(Node):
     # Takes off the vehicle to a user specified altitude (meters)
     def take_off(self):
         param_dict = {
-            "param1": 1.0,                          # Minimum pitch
-            "param4": None,                         # Yaw angle
-            "param5": None,                         # Latitude
-            "param6": None,                         # Longitude
-            "param7": self.takeoff_position[ALT]    # Altitude
+            "param1": 1.0,  # Minimum pitch
+            "param4": None, # Yaw angle
+            "param5": None, # Latitude
+            "param6": None, # Longitude
+            "param7": 5.0   # Altitude
         }
         self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_TAKEOFF, param_dict) # param7 is altitude in meters
-        self.get_logger().info("Takeoff command send to " + str(self.takeoff_position[ALT]))
+        self.get_logger().info("Takeoff command send")
 
     def land(self):
         param_dict = {
@@ -309,12 +278,6 @@ class OffboardControl(Node):
         # self.get_logger().info(f"Global Position: {msg.lat} {msg.lon} {msg.alt}")
         self.global_position = np.array([msg.lat, msg.lon, msg.alt, float('nan')])
 
-    def local_position_callback(self, msg):
-        # self.get_logger().info(f"Local Position: {msg.x} {msg.y} {msg.z}")
-        self.local_position = np.array([msg.x, msg.y, msg.z, float('nan')])
-
-
-
     #receives and sets vehicle status values 
     def vehicle_status_callback(self, msg):
 
@@ -334,6 +297,7 @@ class OffboardControl(Node):
         self.arm_state = msg.arming_state
         self.failsafe = msg.failsafe
         self.flightCheck = msg.pre_flight_checks_pass
+
 
     #receives Twist commands from Teleop and converts NED -> FLU
     def offboard_velocity_callback(self, msg):
@@ -363,11 +327,7 @@ class OffboardControl(Node):
 
         # Publish offboard control modes
         self.offboard_msg_publish()
-
-        if (self.mission_message == False):
-            self.hover_msg_publish()
-        else:
-            self.trajectory_msg_publish()
+        self.trajectory_msg_publish()
 
 
     def offboard_msg_publish(self):
@@ -378,14 +338,6 @@ class OffboardControl(Node):
         offboard_msg.acceleration = False
         self.publisher_offboard_mode.publish(offboard_msg)            
 
-    def hover_msg_publish(self):
-        trajectory_msg = TrajectorySetpoint()
-        trajectory_msg.timestamp = int(Clock().now().nanoseconds / 1000)
-        trajectory_msg.position[LAT] = self.local_position[LAT]
-        trajectory_msg.position[LON] = self.local_position[LON]
-        trajectory_msg.position[ALT] = -self.takeoff_position[ALT]
-        self.publisher_trajectory.publish(trajectory_msg)
-
     def trajectory_msg_publish(self):
         trajectory_msg = TrajectorySetpoint()
         trajectory_msg.timestamp = int(Clock().now().nanoseconds / 1000)
@@ -395,6 +347,7 @@ class OffboardControl(Node):
         trajectory_msg.position[0] = north_offset
         trajectory_msg.position[1] = east_offset
         trajectory_msg.position[2] = -self.path[self.cur_waypoint_index][ALT]
+
         # trajectory_msg.velocity[0] = float('nan')
         # trajectory_msg.velocity[1] = float('nan')
         # trajectory_msg.velocity[2] = float('nan')
@@ -407,7 +360,9 @@ class OffboardControl(Node):
         norm = self.haversine(self.global_position[LAT], self.global_position[LON], self.path[self.cur_waypoint_index][LAT], self.path[self.cur_waypoint_index][LON])
         if norm < 0.1:
             self.cur_waypoint_index += 1 if self.cur_waypoint_index < len(self.path) - 1 else 0
-        self.get_logger().info(f"Distance: {norm} [m]")
+        self.get_logger().info(f"Global Position: {self.global_position}")
+        self.get_logger().info(f"trajectory_msg: {trajectory_msg.position}")
+        self.get_logger().info(f"Distance: {norm}")
         self.get_logger().info(f"Waypoint: {self.cur_waypoint_index + 1}")
     import math
 
