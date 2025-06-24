@@ -19,6 +19,7 @@ from std_msgs.msg import Bool
 from .lib  import PathHandler, DummyPlanner, MiddlePointPlanner, \
                 LAT, LON, ALT, YAW
 import json
+import math
 
 class OffboardControl(Node):
 
@@ -99,23 +100,37 @@ class OffboardControl(Node):
         timer_period = 0.02  # seconds
         self.timer = self.create_timer(timer_period, self.cmdloop_callback)
 
+        self.current_state = "IDLE"
         self.nav_state = VehicleStatus.NAVIGATION_STATE_MAX
-        self.arm_state = VehicleStatus.ARMING_STATE_ARMED
+        self.arming_state = VehicleStatus.ARMING_STATE_ARMED
+        self.vehicle_type = VehicleStatus.VEHICLE_TYPE_UNKNOWN
+        self.in_transition_mode = False
+        self.in_transition_to_fw = False
         self.velocity = Vector3()
         self.cur_waypoint_index = 0
-        self.yaw = 0.0  #yaw value we send as command
-        self.trueYaw = 0.0  #current yaw value of drone
-        self.offboardMode = False
-        self.flightCheck = False
-        self.myCnt = 0
-        self.arm_message = False
-        self.land_message = False
-        self.mission_message = False
-        self.failsafe = False
-        self.current_state = "IDLE"
-        self.last_state = self.current_state
-        self.global_position = np.array([np.nan, np.nan, np.nan, np.nan])
-        self.takeoff_position = np.array([np.nan, np.nan, np.nan, np.nan])
+        self.mission_progress = 0
+        ''' < Mission Progress >
+        0 : IDLE 상태,                 | 이륙 수행
+        1 : 이륙 성공,                 | VTOL 천이(MC → FW) 수행
+        2 : VTOL 천이(MC → FW) 성공,   | FW Trajectory Mission 수행
+        3 : FW Trajectory Mission 성공,| VTOL 천이(FW → MC) 수행
+        4 : VTOL 천이(FW → MC) 성공,   | MC 구조 Mission 수행
+        5 : MC 구조 Mission 수행,      | Land 상태로 진입
+        '''
+        self.yaw                    = 0.0  #yaw value we send as command
+        self.trueYaw                = 0.0  #current yaw value of drone
+        self.takeoff_time           = None        # microseconds
+        self.armed_time             = None        # microseconds
+        self.offboardMode           = False
+        self.pre_flight_checks_pass = False
+        self.myCnt                  = 0
+        self.arm_message            = False
+        self.land_message           = False
+        self.mission_message        = False
+        self.failsafe               = False
+        self.last_state             = self.current_state
+        self.global_position        = np.array([np.nan, np.nan, np.nan, np.nan])
+        self.takeoff_position       = np.array([np.nan, np.nan, np.nan, np.nan])
 
         self.declare_parameter('takeoff_altitude', 0.0)
 
@@ -124,11 +139,15 @@ class OffboardControl(Node):
         # waypoints_str = self.get_parameter('waypoints').get_parameter_value().string_value
         # waypoint_list = json.loads(waypoints_str)  # 문자열을 파이썬 리스트로 변환
         waypoint_list = [
-            [37.5478915, 127.1194249, 20.0, float('nan')],
-            [37.5474712, 127.1186771, 20.0, float('nan')],
-            [37.5468944, 127.1186654, 20.0, float('nan')],
-            [37.5467255, 127.1190820, 20.0, float('nan')]
+            # [37.5478915, 127.1194249, 20.0, float('nan')],
+            # [37.5474712, 127.1186771, 20.0, float('nan')],
+            # [37.5468944, 127.1186654, 20.0, float('nan')],
+            # [37.5467255, 127.1190820, 20.0, float('nan')],
+            [37.000020299999996, 24.0000292, 20, float('nan')],
+            [37.0038957, 24.0000292, 20, float('nan')],
+            [37.000020299999996, 24.0000292, 20, float('nan')],
         ] 
+
         # self.takeoff_altitude = self.get_parameter('altitude').value
         self.waypoints = np.array(waypoint_list)
         self.path = PathHandler(self.waypoints, DummyPlanner).make_path() # DummyPlanner or MiddlePointPlanner
@@ -149,26 +168,26 @@ class OffboardControl(Node):
     def arm_timer_callback(self):
         match self.current_state:
             case "IDLE":
-                if (self.flightCheck and self.land_message == True):
+                if (self.pre_flight_checks_pass and self.land_message == True):
                     # self.get_logger().info(f"Landing")
-                    if (self.arm_state == VehicleStatus.ARMING_STATE_DISARMED):
+                    if (self.arming_state == VehicleStatus.ARMING_STATE_DISARMED):
                         self.land_message = False
                         pass
-                elif(self.flightCheck and self.arm_message == True):
+                elif(self.pre_flight_checks_pass and self.arm_message == True):
                     self.current_state = "ARMING"
                     self.get_logger().info(f"Arming")
 
             case "ARMING":
-                if(not(self.flightCheck)):
+                if(not(self.pre_flight_checks_pass)):
                     self.current_state = "IDLE"
                     self.get_logger().info(f"Arming, Flight Check Failed")
-                elif(self.arm_state == VehicleStatus.ARMING_STATE_ARMED and self.myCnt > 10):
+                elif(self.arming_state == VehicleStatus.ARMING_STATE_ARMED and self.myCnt > 10):
                     self.current_state = "TAKEOFF"
                     self.get_logger().info(f"Arming, Takeoff")
                 self.arm() #send arm command
 
             case "TAKEOFF":
-                if(not(self.flightCheck)):
+                if(not(self.pre_flight_checks_pass)):
                     self.current_state = "IDLE"
                     self.get_logger().info(f"Takeoff, Flight Check Failed")
                 elif(self.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_TAKEOFF):
@@ -178,23 +197,49 @@ class OffboardControl(Node):
                     self.takeoff_position[LON] = self.global_position[LON]
                     self.takeoff_position[ALT] = self.takeoff_altitude
                 self.param_MIS_TAKEOFF_ALT() #send takeoff altitude command
-                self.arm() #send arm command
+                # self.arm() #send arm command
                 self.take_off() #send takeoff command
 
             # waits in this state while taking off, and the 
             # moment VehicleStatus switches to Loiter state it will switch to offboard
             case "LOITER": 
-                if(not(self.flightCheck)):
+                if(not(self.pre_flight_checks_pass)):
                     self.current_state = "IDLE"
                     self.get_logger().info(f"Loiter, Flight Check Failed")
-                elif(self.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_LOITER):
-                    self.current_state = "OFFBOARD"
-                    self.get_logger().info(f"Loiter, Offboard")
+                elif(self.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_LOITER
+                     and self.mission_progress != 0):
+                     match self.mission_progress:
+                        case 1:
+                            self.current_state = "TRANSITION_FW"
+                        case 2:
+                            pass
+                        case 3:
+                            self.current_state = "TRANSITION_MC"
+                # elif(self.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_LOITER):
+                #     self.current_state = "OFFBOARD"
+                #     self.get_logger().info(f"Loiter, Offboard")
+                if (self.armed_time is not None and self.takeoff_time is not None
+                    and self.global_position[ALT] > self.takeoff_position[ALT] * 0.7):
+                    self.mission_progress = 1
+                    self.get_logger().info(f"Takeoff Success")
                 self.arm()
 
+            case "TRANSITION_FW":
+                if(not(self.pre_flight_checks_pass)):
+                    self.current_state = "IDLE"
+                    self.get_logger().info(f"Transition, Flight Check Failed")
+                elif(self.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_LOITER):
+                    self.transition_MC_to_FW()
+                    self.get_logger().info(f"Transition, Offboard")
+                    if(self.in_transition_mode == True):# and self.in_transition_to_fw == True):
+                        self.mission_progress = 2
+                    elif(self.mission_progress == 2 and self.in_transition_mode == False):#and self.in_transition_to_fw == False):
+                        self.current_state = "OFFBOARD"
+                        self.get_logger().info(f"VTOL transition complete (MC → FW). Offboard mode enabled.")
+
             case "OFFBOARD":
-                if(not(self.flightCheck) 
-                   or self.arm_state != VehicleStatus.ARMING_STATE_ARMED 
+                if(not(self.pre_flight_checks_pass) 
+                   or self.arming_state != VehicleStatus.ARMING_STATE_ARMED 
                    or self.failsafe == True):
                     self.current_state = "IDLE"
                     self.get_logger().info(f"Offboard, Flight Check Failed")
@@ -203,9 +248,15 @@ class OffboardControl(Node):
                     self.current_state = "LAND"
                     self.get_logger().info(f"Land, Idle")
                 self.state_offboard()
+                self.offboardMode = True   
+
+            case "TRANSITION_MC":
+                pass
+                    # else:
+                    #     self.get_logger().info(f"VTOL transition complete (FW → MC). Offboard mode enabled.")
 
             case "LAND":
-                if (not(self.flightCheck)):
+                if (not(self.pre_flight_checks_pass)):
                     self.current_state = "IDLE"
                     self.get_logger().info(f"Land, Flight Check Failed")
                 elif(self.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_LAND):
@@ -217,7 +268,7 @@ class OffboardControl(Node):
                 self.get_logger().info(f"Land, Land Message: {self.land_message}")
 
 
-        if(self.arm_state != VehicleStatus.ARMING_STATE_ARMED):
+        if(self.arming_state != VehicleStatus.ARMING_STATE_ARMED):
             self.arm_message = False
 
 
@@ -226,6 +277,23 @@ class OffboardControl(Node):
             self.get_logger().info(self.current_state)
         self.myCnt += 1
 
+
+    def transition_MC_to_FW(self):
+        param_dict = {
+            "param1": 4.0,  # Mode
+        }
+
+        self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_VTOL_TRANSITION, param_dict)
+        self.get_logger().info("Transition(MC → FW) command send")
+
+    def transition_FW_to_MC(self):
+        param_dict = {
+            "param1": 3.0,  # Mode
+        }
+
+        self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_VTOL_TRANSITION, param_dict)
+        self.get_logger().info("Transition(FW → MC) command send")
+
     def state_offboard(self):
         param_dict = {
             "param1": 1.0,  # Mode
@@ -233,7 +301,6 @@ class OffboardControl(Node):
         }
         self.myCnt = 0
         self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, param_dict)
-        self.offboardMode = True   
 
     ''' 잘 안됨 '''
     def param_MIS_TAKEOFF_ALT(self):
@@ -244,6 +311,7 @@ class OffboardControl(Node):
 
         self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_PARAMETER, param_dict)
         self.get_logger().info("MIS_TAKEOFF_ALT command send")
+
 
     # Arms the vehicle
     def arm(self):
@@ -313,27 +381,42 @@ class OffboardControl(Node):
         # self.get_logger().info(f"Local Position: {msg.x} {msg.y} {msg.z}")
         self.local_position = np.array([msg.x, msg.y, msg.z, float('nan')])
 
-
-
     #receives and sets vehicle status values 
     def vehicle_status_callback(self, msg):
 
-        if (msg.nav_state != self.nav_state):
-            self.get_logger().info(f"NAV_STATUS: {msg.nav_state}")
+        # if (msg.nav_state != self.nav_state):
+        self.get_logger().info(f"NAV_STATUS: {msg.nav_state}")
         
-        if (msg.arming_state != self.arm_state):
+        if (msg.arming_state != self.arming_state):
             self.get_logger().info(f"ARM STATUS: {msg.arming_state}")
 
         if (msg.failsafe != self.failsafe):
             self.get_logger().info(f"FAILSAFE: {msg.failsafe}")
         
-        if (msg.pre_flight_checks_pass != self.flightCheck):
+        if (msg.pre_flight_checks_pass != self.pre_flight_checks_pass):
             self.get_logger().info(f"FlightCheck: {msg.pre_flight_checks_pass}")
 
+        if (self.armed_time != msg.armed_time):
+            self.get_logger().info(f"Armed Time: {msg.armed_time}")
+        if (self.takeoff_time != msg.takeoff_time):
+            self.get_logger().info(f"Takeoff Time: {msg.takeoff_time}")
+
+        self.get_logger().info(f"")
+        self.get_logger().info(f"Mission Progress    : {self.mission_progress}")
+        self.get_logger().info(f"Vehicle Type        : {msg.vehicle_type}")
+        self.get_logger().info(f"VTOL trasintion mode: {msg.in_transition_mode}")
+        self.get_logger().info(f"VTOL MC -> FW       : {msg.in_transition_to_fw}")
+
+        self.armed_time = msg.armed_time
+        self.takeoff_time = msg.takeoff_time
         self.nav_state = msg.nav_state
-        self.arm_state = msg.arming_state
+        self.arming_state = msg.arming_state
+        self.vehicle_type = msg.vehicle_type
+        self.in_transition_mode = msg.in_transition_mode
+        self.in_transition_to_fw = msg.in_transition_to_fw
         self.failsafe = msg.failsafe
-        self.flightCheck = msg.pre_flight_checks_pass
+        self.pre_flight_checks_pass = msg.pre_flight_checks_pass
+
 
     #receives Twist commands from Teleop and converts NED -> FLU
     def offboard_velocity_callback(self, msg):
@@ -358,16 +441,17 @@ class OffboardControl(Node):
         
     #publishes offboard control modes and velocity as trajectory setpoints
     def cmdloop_callback(self):
+
         if (self.offboardMode == False):
             return
+        if (self.mission_progress % 2 != 0):
+            return
 
-        # Publish offboard control modes
         self.offboard_msg_publish()
-
-        if (self.mission_message == False):
-            self.hover_msg_publish()
-        else:
-            self.trajectory_msg_publish()
+        # if (self.mission_message == False):
+        #     self.hover_msg_publish()
+        # else:
+        self.trajectory_msg_publish()
 
 
     def offboard_msg_publish(self):
@@ -376,7 +460,9 @@ class OffboardControl(Node):
         offboard_msg.position = True 
         offboard_msg.velocity = False 
         offboard_msg.acceleration = False
+        offboard_msg.body_rate = False
         self.publisher_offboard_mode.publish(offboard_msg)            
+
 
     def hover_msg_publish(self):
         trajectory_msg = TrajectorySetpoint()
@@ -409,7 +495,6 @@ class OffboardControl(Node):
             self.cur_waypoint_index += 1 if self.cur_waypoint_index < len(self.path) - 1 else 0
         self.get_logger().info(f"Distance: {norm} [m]")
         self.get_logger().info(f"Waypoint: {self.cur_waypoint_index + 1}")
-    import math
 
     def haversine(self, lat1, lon1, lat2, lon2):
         # 지구 반지름 (미터 단위)
