@@ -16,8 +16,9 @@ from math import pi
 import math
 from std_msgs.msg import Bool
 from .lib  import PathHandler, DummyPlanner, MiddlePointPlanner, \
-                LAT, LON, ALT, YAW
+                LAT, LON, ALT, YAW, DICT_NAVIGATION_STATE
 import json
+import math
 
 class OffboardControl(Node):
 
@@ -116,17 +117,17 @@ class OffboardControl(Node):
         self.global_position = np.array([np.nan, np.nan, np.nan, np.nan])
         self.takeoff_position = np.array([np.nan, np.nan, np.nan, np.nan])
 
-        self.declare_parameter('takeoff_altitude', 0.0)
+        self.declare_parameter('takeoff_altitude', 7.0)
 
         self.takeoff_altitude = self.get_parameter('takeoff_altitude').value
         # self.declare_parameter('waypoint_list', [])
         # waypoints_str = self.get_parameter('waypoints').get_parameter_value().string_value
         # waypoint_list = json.loads(waypoints_str)  # 문자열을 파이썬 리스트로 변환
         waypoint_list = [
-            [37.5478915, 127.1194249, 20.0, float('nan')],
-            [37.5474712, 127.1186771, 20.0, float('nan')],
-            [37.5468944, 127.1186654, 20.0, float('nan')],
-            [37.5467255, 127.1190820, 20.0, float('nan')]
+            [37.5478915, 127.1194249, 7.0, float('nan')],
+            [37.5474712, 127.1186771, 7.0, float('nan')],
+            [37.5468944, 127.1186654, 7.0, float('nan')],
+            [37.5467255, 127.1190820, 7.0, float('nan')]
         ] 
         # self.takeoff_altitude = self.get_parameter('altitude').value
         self.waypoints = np.array(waypoint_list)
@@ -170,15 +171,17 @@ class OffboardControl(Node):
                 if(not(self.flightCheck)):
                     self.current_state = "IDLE"
                     self.get_logger().info(f"Takeoff, Flight Check Failed")
-                elif(self.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_TAKEOFF):
-                    self.current_state = "LOITER"
+                elif(self.nav_state != VehicleStatus.NAVIGATION_STATE_AUTO_TAKEOFF):
                     self.get_logger().info(f"Takeoff, Loiter")
                     self.takeoff_position[LAT] = self.global_position[LAT]
                     self.takeoff_position[LON] = self.global_position[LON]
                     self.takeoff_position[ALT] = self.takeoff_altitude
-                self.param_MIS_TAKEOFF_ALT() #send takeoff altitude command
-                self.arm() #send arm command
-                self.take_off() #send takeoff command
+                    self.get_logger().info(f"Takeoff Position: {self.takeoff_position[LAT]}, {self.takeoff_position[LON]}, {self.takeoff_position[ALT]}")
+                    self.take_off() #send takeoff command
+                elif(self.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_TAKEOFF):
+                    self.get_logger().info(f"Takeoff Success")
+                    self.current_state = "LOITER"
+                self.arm()
 
             # waits in this state while taking off, and the 
             # moment VehicleStatus switches to Loiter state it will switch to offboard
@@ -186,10 +189,18 @@ class OffboardControl(Node):
                 if(not(self.flightCheck)):
                     self.current_state = "IDLE"
                     self.get_logger().info(f"Loiter, Flight Check Failed")
-                elif(self.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_LOITER):
+                elif(self.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_TAKEOFF):
+                    self.arm()
+                elif(self.nav_state != VehicleStatus.NAVIGATION_STATE_AUTO_LOITER):
+                    self.state_hold()
+                elif(self.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_LOITER
+                     and self.mission_message == True
+                     and self.cur_waypoint_index < len(self.path)):
                     self.current_state = "OFFBOARD"
-                    self.get_logger().info(f"Loiter, Offboard")
-                self.arm()
+                elif(self.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_LOITER 
+                     and self.land_message == True):
+                    self.current_state = "LAND"
+                    self.get_logger().info(f"Landing")
 
             case "OFFBOARD":
                 if(not(self.flightCheck) 
@@ -197,22 +208,26 @@ class OffboardControl(Node):
                    or self.failsafe == True):
                     self.current_state = "IDLE"
                     self.get_logger().info(f"Offboard, Flight Check Failed")
-                elif(self.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD 
-                     and self.land_message == True):
-                    self.current_state = "LAND"
-                    self.get_logger().info(f"Land, Idle")
+                elif(self.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD
+                     and self.mission_message == False):
+                    self.current_state = "LOITER"
+                elif(self.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD
+                     and self.cur_waypoint_index == len(self.path)):
+                     self.offboardMode = False
+                     self.current_state = "LOITER"
+                     self.get_logger().info("All waypoints reached. Hovering. {self.cur_waypoint_index} waypoints in total.")
                 self.state_offboard()
+                self.offboardMode = True   
 
             case "LAND":
                 if (not(self.flightCheck)):
                     self.current_state = "IDLE"
                     self.get_logger().info(f"Land, Flight Check Failed")
-                elif(self.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_LAND):
+                elif(self.nav_state != VehicleStatus.NAVIGATION_STATE_AUTO_LAND):
+                    self.land()
+                else:
                     self.current_state = "IDLE"
                     self.get_logger().info(f"Land, Idle")
-                else:
-                    self.land()
-                    self.offboardMode = False
                 self.get_logger().info(f"Land, Land Message: {self.land_message}")
 
 
@@ -225,6 +240,18 @@ class OffboardControl(Node):
             self.get_logger().info(self.current_state)
         self.myCnt += 1
 
+    def state_hold(self):
+        ''' Position Control Mode '''
+        param_dict = {
+            "param1": 1.0,  # Mode
+            "param2": 4.0,  # Mode
+            "param3": 3.0,  # Mode
+        }
+
+        self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, param_dict)
+        self.get_logger().info("Hold Control Mode command send")
+
+
     def state_offboard(self):
         param_dict = {
             "param1": 1.0,  # Mode
@@ -232,17 +259,6 @@ class OffboardControl(Node):
         }
         self.myCnt = 0
         self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, param_dict)
-        self.offboardMode = True   
-
-    ''' 잘 안됨 '''
-    def param_MIS_TAKEOFF_ALT(self):
-        param_dict = {
-            "param1": 1028.0,  # Parameter index
-            "param2": 0.1,  # Parameter value
-        }
-
-        self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_PARAMETER, param_dict)
-        self.get_logger().info("MIS_TAKEOFF_ALT command send")
 
     # Arms the vehicle
     def arm(self):
@@ -265,12 +281,11 @@ class OffboardControl(Node):
         param_dict = {
             "param1": 1.0,                          # Minimum pitch
             "param4": None,                         # Yaw angle
-            "param5": None,                         # Latitude
-            "param6": None,                         # Longitude
+            "param5": self.takeoff_position[LAT],   # Latitude
+            "param6": self.takeoff_position[LON],   # Longitude
             "param7": self.takeoff_position[ALT]    # Altitude
         }
         self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_TAKEOFF, param_dict) # param7 is altitude in meters
-        self.get_logger().info("Takeoff command send to " + str(self.takeoff_position[ALT]))
 
     def land(self):
         param_dict = {
@@ -317,8 +332,11 @@ class OffboardControl(Node):
     #receives and sets vehicle status values 
     def vehicle_status_callback(self, msg):
 
-        if (msg.nav_state != self.nav_state):
-            self.get_logger().info(f"NAV_STATUS: {msg.nav_state}")
+        self.get_logger().info(f"")
+        self.get_logger().info(f"NAV_STATUS          : {DICT_NAVIGATION_STATE[msg.nav_state]}")
+        self.get_logger().info(f"Current State       : {self.current_state}")
+        # if (msg.nav_state != self.nav_state):
+        #     self.get_logger().info(f"NAV_STATUS: {msg.nav_state}")
         
         if (msg.arming_state != self.arm_state):
             self.get_logger().info(f"ARM STATUS: {msg.arming_state}")
@@ -328,6 +346,7 @@ class OffboardControl(Node):
         
         if (msg.pre_flight_checks_pass != self.flightCheck):
             self.get_logger().info(f"FlightCheck: {msg.pre_flight_checks_pass}")
+
 
         self.nav_state = msg.nav_state
         self.arm_state = msg.arming_state
@@ -363,11 +382,9 @@ class OffboardControl(Node):
         # Publish offboard control modes
         self.offboard_msg_publish()
 
-        if (self.mission_message == False):
-            self.hover_msg_publish()
-        else:
-            self.trajectory_msg_publish()
 
+        if (self.mission_message == True):
+            self.trajectory_msg_publish()
 
     def offboard_msg_publish(self):
         offboard_msg = OffboardControlMode()
@@ -386,6 +403,9 @@ class OffboardControl(Node):
         self.publisher_trajectory.publish(trajectory_msg)
 
     def trajectory_msg_publish(self):
+        if self.cur_waypoint_index == len(self.path):
+            return
+
         trajectory_msg = TrajectorySetpoint()
         trajectory_msg.timestamp = int(Clock().now().nanoseconds / 1000)
         north_offset, east_offset = \
@@ -394,21 +414,32 @@ class OffboardControl(Node):
         trajectory_msg.position[0] = north_offset
         trajectory_msg.position[1] = east_offset
         trajectory_msg.position[2] = -self.path[self.cur_waypoint_index][ALT]
+
+        yaw = self.get_heading_to_target(self.global_position[LAT], self.global_position[LON],
+                                    self.path[self.cur_waypoint_index][LAT], self.path[self.cur_waypoint_index][LON])
+
         # trajectory_msg.velocity[0] = float('nan')
         # trajectory_msg.velocity[1] = float('nan')
         # trajectory_msg.velocity[2] = float('nan')
         # trajectory_msg.acceleration[0] = float('nan')
         # trajectory_msg.acceleration[1] = float('nan')
         # trajectory_msg.acceleration[2] = float('nan')
-        # trajectory_msg.yaw = self.yaw
+        # yaw = math.atan2(east_offset, north_offset)  # deg
+        # yaw -= math.pi / 2
+        trajectory_msg.yaw = yaw
         # trajectory_msg.yawspeed = 0.0
         self.publisher_trajectory.publish(trajectory_msg)
+
         norm = self.haversine(self.global_position[LAT], self.global_position[LON], self.path[self.cur_waypoint_index][LAT], self.path[self.cur_waypoint_index][LON])
-        if norm < 0.1:
-            self.cur_waypoint_index += 1 if self.cur_waypoint_index < len(self.path) - 1 else 0
+        if norm < 1.00:
+            self.cur_waypoint_index += 1 if self.cur_waypoint_index < len(self.path) else 0
+            # self.cur_waypoint_index = self.cur_waypoint_index if self.cur_waypoint_index < len(self.path) else 0
+
         self.get_logger().info(f"Distance: {norm} [m]")
         self.get_logger().info(f"Waypoint: {self.cur_waypoint_index + 1}")
-    import math
+        self.get_logger().info(f"offset: {north_offset}, {east_offset} [m]")
+        # self.get_logger().info(f"Heading: {math.degrees(yaw)} [deg]")
+        self.get_logger().info(f"Cur Heading: {math.degrees(self.trueYaw)} [deg]")
 
     def haversine(self, lat1, lon1, lat2, lon2):
         # 지구 반지름 (미터 단위)
@@ -436,6 +467,23 @@ class OffboardControl(Node):
             east = -east
 
         return north, east
+
+
+    def get_heading_to_target(self, lat1, lon1, lat2, lon2) -> float:
+        """
+        현재 위치 (lat1, lon1) → 목표 위치 (lat2, lon2) 로 향하는 방향의 yaw (rad)를 반환.
+        PX4 기준: 북쪽 = 0, 동쪽 = π/2, 시계방향 양수
+        """
+        lat1_rad = math.radians(lat1)
+        lat2_rad = math.radians(lat2)
+        dlon_rad = math.radians(lon2 - lon1)
+
+        x = math.sin(dlon_rad) * math.cos(lat2_rad)
+        y = math.cos(lat1_rad) * math.sin(lat2_rad) - \
+            math.sin(lat1_rad) * math.cos(lat2_rad) * math.cos(dlon_rad)
+
+        yaw_rad = math.atan2(x, y)  # NED 기준 방향 (북 = 0)
+        return yaw_rad  # PX4는 rad 기준, trajectory_msg.yaw에 그대로 넣으면 됨
 
 
 def main(args=None):

@@ -32,7 +32,9 @@ setup(
                 'control = px4_mach_offboard.control:main',
                 'processes = px4_mach_offboard.processes:main',
                 'location = px4_mach_offboard.location:main',
-                'px4_status = px4_mach_offboard.px4_vehicle_status:main'                
+                'px4_status = px4_mach_offboard.px4_vehicle_status:main',               
+                'offboard_mc_control_1_trajectory = px4_mach_offboard.offboard_mc_control_1_trajectory:main',
+                'offboard_mc_control_2_takeoff_edited = px4_mach_offboard.offboard_mc_control_2_takeoff_edited:main',
         ],
     },
 )
