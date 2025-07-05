@@ -104,6 +104,7 @@ def main():
     arm_toggle = False
     land_toggle = False
     mission_toggle = False
+    trasiotion_toggle = False
     arm_pub = node.create_publisher(std_msgs.msg.Bool, '/arm_message', qos_profile)
     land_pub = node.create_publisher(std_msgs.msg.Bool, '/land_message', qos_profile)
     mission_pub = node.create_publisher(std_msgs.msg.Bool, '/mission_message', qos_profile)
@@ -161,6 +162,8 @@ def main():
                     print("Mission Enabled")
                 else:
                     print("Mission Disabled")
+
+                
 
 
             twist = geometry_msgs.msg.Twist()
