@@ -1,5 +1,3 @@
-# 2026 MACH VTOL
-
 ## PX4 SD Card Dump
 #### 해당 과정은 QGC Analyze Tool에 있는 MAVLink Console에서 진행!
 ### 문제
