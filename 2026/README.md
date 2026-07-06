@@ -1,7 +1,7 @@
 # 2026 MACH VTOL
 
 ## PX4 SD Card Dump
-#### 이 과정은 QGC Analyze Tool에 있는 MAVLink Console에서 진행!
+#### 해당 과정은 QGC Analyze Tool에 있는 MAVLink Console에서 진행!
 ### 문제
 
 - QGC 연결/해제 또는 재부팅 시 `SD card Dump` 발생
