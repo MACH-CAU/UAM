@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import math
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import (
@@ -16,7 +17,14 @@ from px4_msgs.msg import (
     VehicleCommand,
     VehicleCommandAck,
     OffboardControlMode,
+    FixedWingLateralSetpoint,
+    FixedWingLongitudinalSetpoint,
+    TrajectorySetpoint,
 )
+
+from std_msgs.msg import Bool
+
+import threading
 
 
 class FixedWingOffboardNode(Node):
@@ -41,6 +49,8 @@ class FixedWingOffboardNode(Node):
         self.local_x = float('nan')
         self.local_y = float('nan')
         self.local_z = float('nan')
+        self.local_vx = float('nan')
+        self.local_vy = float('nan')
 
         # 현재 GPS 위치 저장
         self.latitude = float('nan')
@@ -52,6 +62,27 @@ class FixedWingOffboardNode(Node):
         self.offboard_counter = 0
         self.offboard_command_sent = False
         
+        self.mission_state = 'WAIT_FOR_AIRBORNE_MANUAL'
+        self.start_mission_requested = False
+        self.offboard_command_sent = False
+        self.offboard_warmup_count = 0
+
+        self.hold_course_rad = float('nan')
+        self.hold_altitude_amsl = float('nan')
+        self.target_airspeed_mps = 18.0
+
+        # 단일 WP 시험 설정
+        self.test_waypoint_distance_m = 40.0
+        self.waypoint_acceptance_radius_m = 15.0
+        self.offboard_test_timeout_sec = 12.0
+        
+        self.target_x = float('nan')
+        self.target_y = float('nan')
+        self.target_z = float('nan')
+        
+        self.waypoint_initialized = False
+        self.offboard_active_start_time = None
+
         self.status_sub = self.create_subscription(
             VehicleStatus,
             '/fmu/out/vehicle_status_v4',
@@ -78,7 +109,7 @@ class FixedWingOffboardNode(Node):
             "/fmu/out/vehicle_command_ack",
             self.command_ack_callback,
             px4_qos,
-    )        
+        )        
 
 
         self.vehicle_command_pub = self.create_publisher(
@@ -106,6 +137,31 @@ class FixedWingOffboardNode(Node):
             10,
         )
 
+        self.fw_lateral_setpoint_pub = self.create_publisher(
+            FixedWingLateralSetpoint,
+            '/fmu/in/fixed_wing_lateral_setpoint',
+            10,
+        )
+        
+        self.fw_longitudinal_setpoint_pub = self.create_publisher(
+            FixedWingLongitudinalSetpoint,
+            '/fmu/in/fixed_wing_longitudinal_setpoint',
+            10,
+        )
+    
+        self.start_mission_sub = self.create_subscription(
+            Bool,
+            '/start_mission',
+            self.start_mission_callback,
+            10,
+        )   
+
+        self.trajectory_setpoint_pub = self.create_publisher(
+            TrajectorySetpoint,
+            '/fmu/in/trajectory_setpoint',
+            10,
+        )
+
         # 1초마다 현재 상태 출력
         self.print_timer = self.create_timer(
             1.0,
@@ -116,10 +172,16 @@ class FixedWingOffboardNode(Node):
             'Fixed-wing offboard node started. Waiting for PX4 data...'
         )
         
-        self.offboard_timer = self.create_timer(
+        self.control_timer = self.create_timer(
             0.1,
-            self.offboard_test_callback,
+            self.control_loop,
         )
+
+        self.keyboard_thread = threading.Thread(
+            target=self.wait_for_start_key,
+            daemon=True,
+        )
+        self.keyboard_thread.start()
       
 
     def vehicle_status_callback(self, msg: VehicleStatus) -> None:
@@ -134,6 +196,8 @@ class FixedWingOffboardNode(Node):
         self.local_x = msg.x
         self.local_y = msg.y
         self.local_z = msg.z
+        self.local_vx = msg.vx
+        self.local_vy = msg.vy
 
     def global_position_callback(
         self,
@@ -183,6 +247,11 @@ class FixedWingOffboardNode(Node):
             f'command={msg.command}, '
             f'result={result_text}'
         )
+    
+    def wait_for_start_key(self) -> None:
+        input('Press Enter to start mission...\n')
+        self.start_mission_requested = True
+        self.get_logger().info('Mission start requested by keyboard.')
 
     def publish_vehicle_command(
         self,
@@ -224,14 +293,30 @@ class FixedWingOffboardNode(Node):
         self.get_logger().info(
             'OFFBOARD mode command sent.'
         )
-
-    def arm(self) -> None:
+    
+    def request_offboard_mode(self) -> None:
         self.publish_vehicle_command(
-            VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM,
+            VehicleCommand.VEHICLE_CMD_DO_SET_MODE,
             param1=1.0,
+            param2=6.0,
         )
-        self.get_logger().info('ARM command sent.')
-      
+        self.get_logger().info('OFFBOARD mode command sent.')
+    
+    
+    def request_stabilized_mode(self) -> None:
+        self.publish_vehicle_command(
+            VehicleCommand.VEHICLE_CMD_DO_SET_MODE,
+            param1=1.0,
+            param2=7.0,
+        )
+        self.get_logger().info('STABILIZED mode command sent.')
+        def arm(self) -> None:
+            self.publish_vehicle_command(
+                VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM,
+                param1=1.0,
+            )
+            self.get_logger().info('ARM command sent.')
+          
       
     def disarm(self) -> None:
         self.publish_vehicle_command(
@@ -277,20 +362,236 @@ class FixedWingOffboardNode(Node):
     
         self.offboard_control_mode_pub.publish(msg)
     
-    def offboard_test_callback(self) -> None:
-        # Offboard heartbeat는 계속 보냄
+    def control_loop(self) -> None:
+        # Offboard heartbeat는 계속 10 Hz로 보낸다.
         self.publish_offboard_control_mode()
     
-        self.offboard_counter += 1
+        airborne_manual_ready = (
+            self.arming_state
+            == VehicleStatus.ARMING_STATE_ARMED
+            and self.failsafe is False
+            and not math.isnan(self.local_z)
+            and self.local_z < -10.0
+        )
     
-        # 10 Hz 기준 20회 = 약 2초
+        if self.mission_state == 'WAIT_FOR_AIRBORNE_MANUAL':
+            if self.start_mission_requested and airborne_manual_ready:
+                if not self.initialize_test_waypoint():
+                    self.start_mission_requested = False
+                    return
+    
+                self.offboard_warmup_count = 0
+                self.mission_state = 'OFFBOARD_WARMUP'
+                self.get_logger().info('State: OFFBOARD_WARMUP')
+    
+        elif self.mission_state == 'OFFBOARD_WARMUP':
+            self.publish_trajectory_setpoint()
+            self.offboard_warmup_count += 1
+    
+            if self.offboard_warmup_count >= 20:
+                self.request_offboard_mode()
+                self.mission_state = 'REQUEST_OFFBOARD'
+                self.get_logger().info('State: REQUEST_OFFBOARD')
+        
+        elif self.mission_state == 'REQUEST_STABILIZED':
+            self.publish_trajectory_setpoint()
+        
+            if self.nav_state != VehicleStatus.NAVIGATION_STATE_OFFBOARD:
+                self.mission_state = 'COMPLETE'
+                self.get_logger().info(
+                    'State: COMPLETE — pilot control restored.'
+                )
+    
+        elif self.mission_state == 'REQUEST_OFFBOARD':
+            self.publish_trajectory_setpoint()
+    
+            if (
+                self.nav_state
+                == VehicleStatus.NAVIGATION_STATE_OFFBOARD
+            ):
+                self.offboard_active_start_time = self.get_clock().now()
+                self.mission_state = 'OFFBOARD_ACTIVE'
+                self.get_logger().info('State: OFFBOARD_ACTIVE')
+    
+        elif self.mission_state == 'OFFBOARD_ACTIVE':
+            self.publish_trajectory_setpoint()
+    
+            distance_m = self.distance_to_test_waypoint()
+    
+            self.get_logger().info(
+                f'Distance to test WP: {distance_m:.1f} m'
+            )
+    
+            elapsed_sec = (
+                self.get_clock().now()
+                - self.offboard_active_start_time
+            ).nanoseconds / 1_000_000_000
+    
+            if distance_m <= self.waypoint_acceptance_radius_m:
+                self.get_logger().info(
+                    'Test waypoint reached. Switch to STABILIZED or POSITION manually.'
+                )
+                self.mission_state = 'REQUEST_STABILIZED'
+    
+            elif elapsed_sec >= self.offboard_test_timeout_sec:
+                self.get_logger().warning(
+                    'Test timeout. Returning to STABILIZED.'
+                )
+                self.request_stabilized_mode()
+                self.mission_state = 'REQUEST_STABILIZED'
+    
+        elif self.mission_state == 'REQUEST_STABILIZED':
+            # 전환 완료 전까지 heartbeat는 계속 보내지만
+            # 더 이상 새로운 경로는 진행하지 않는다.
+            if (
+                self.nav_state
+                == VehicleStatus.NAVIGATION_STATE_STAB
+            ):
+                self.mission_state = 'COMPLETE'
+                self.get_logger().info(
+                    'State: COMPLETE — pilot control restored.'
+                )
+    
+        elif self.mission_state == 'COMPLETE':
+            pass
+    
+    def start_mission_callback(self, msg: Bool) -> None:
+        if msg.data:
+    
+            self.publish_fixed_wing_setpoints()
+        
+            self.offboard_warmup_count += 1
+        
+            if self.offboard_warmup_count >= 20:
+                self.request_offboard_mode()
+                self.mission_state = 'REQUEST_OFFBOARD'
+                self.get_logger().info('State: REQUEST_OFFBOARD')
+    
+        elif self.mission_state == 'REQUEST_OFFBOARD':
+            self.publish_fixed_wing_setpoints()
+        
+            if self.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD:
+                self.mission_state = 'OFFBOARD_ACTIVE'
+                self.get_logger().info('State: OFFBOARD_ACTIVE')
+            
+        elif self.mission_state == 'OFFBOARD_ACTIVE':
+            self.publish_fixed_wing_setpoints()
+    
+    def start_mission_callback(self, msg: Bool) -> None:
+        if msg.data:
+            self.start_mission_requested = True
+            self.get_logger().info('Mission start requested.')
+    
+    def get_current_course(self) -> float:
+        speed_horizontal = math.hypot(self.local_vx, self.local_vy)
+    
+        if speed_horizontal < 1.0:
+            return float('nan')
+    
+        return math.atan2(self.local_vy, self.local_vx)
+    
+    def publish_fixed_wing_setpoints(self) -> None:
+        timestamp_us = int(
+            self.get_clock().now().nanoseconds / 1000
+        )
+    
+        lateral_msg = FixedWingLateralSetpoint()
+        lateral_msg.timestamp = timestamp_us
+        lateral_msg.course = self.hold_course_rad
+        lateral_msg.airspeed_direction = float('nan')
+        lateral_msg.lateral_acceleration = float('nan')
+    
+        longitudinal_msg = FixedWingLongitudinalSetpoint()
+        longitudinal_msg.timestamp = timestamp_us
+        longitudinal_msg.altitude = self.hold_altitude_amsl
+        longitudinal_msg.height_rate = float('nan')
+        longitudinal_msg.equivalent_airspeed = self.target_airspeed_mps
+        longitudinal_msg.pitch_direct = float('nan')
+        longitudinal_msg.throttle_direct = float('nan')
+    
+        self.fw_lateral_setpoint_pub.publish(lateral_msg)
+        self.fw_longitudinal_setpoint_pub.publish(longitudinal_msg)
+    def initialize_test_waypoint(self) -> bool:
+        """현재 비행 진행방향의 일정 거리 앞에 임시 로컬 NED WP를 생성한다."""
+        horizontal_speed = math.hypot(self.local_vx, self.local_vy)    
         if (
-            self.offboard_counter >= 20
-            and not self.offboard_command_sent
+            math.isnan(self.local_x)
+            or math.isnan(self.local_y)
+            or math.isnan(self.local_z)
+            or horizontal_speed < 3.0
         ):
-            self.request_offboard_mode()
-            self.offboard_command_sent = True
-
+            self.get_logger().warning(
+                'Cannot create waypoint: local position or velocity is invalid.'
+            )
+            return False    
+        direction_north = self.local_vx / horizontal_speed
+        direction_east = self.local_vy / horizontal_speed    
+        self.target_x = (
+            self.local_x
+            + self.test_waypoint_distance_m * direction_north
+        )
+        self.target_y = (
+            self.local_y
+            + self.test_waypoint_distance_m * direction_east
+        )
+        self.target_z = self.local_z    
+        self.waypoint_initialized = True    
+        self.get_logger().info(
+            'Test waypoint initialized: '
+            f'x={self.target_x:.1f}, '
+            f'y={self.target_y:.1f}, '
+            f'z={self.target_z:.1f}'
+        )
+        return True
+    def publish_trajectory_setpoint(self) -> None:
+        if not self.waypoint_initialized:
+            return
+    
+        msg = TrajectorySetpoint()
+    
+        msg.timestamp = int(
+            self.get_clock().now().nanoseconds / 1000
+        )
+    
+        msg.position = [
+            float(self.target_x),
+            float(self.target_y),
+            float(self.target_z),
+        ]
+    
+        msg.velocity = [
+            float('nan'),
+            float('nan'),
+            float('nan'),
+        ]
+    
+        msg.acceleration = [
+            float('nan'),
+            float('nan'),
+            float('nan'),
+        ]
+    
+        msg.jerk = [
+            float('nan'),
+            float('nan'),
+            float('nan'),
+        ]
+    
+        msg.yaw = float('nan')
+        msg.yawspeed = float('nan')
+    
+        self.trajectory_setpoint_pub.publish(msg)
+    
+    def distance_to_test_waypoint(self) -> float:
+        if not self.waypoint_initialized:
+            return float('inf')
+    
+        dx = self.target_x - self.local_x
+        dy = self.target_y - self.local_y
+        dz = self.target_z - self.local_z
+    
+        return math.sqrt(dx * dx + dy * dy + dz * dz)
+    
 def main(args=None) -> None:
     rclpy.init(args=args)
 
