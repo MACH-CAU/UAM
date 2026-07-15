@@ -71,15 +71,20 @@ class FixedWingOffboardNode(Node):
         self.hold_altitude_amsl = float('nan')
         self.target_airspeed_mps = 18.0
 
-        # 단일 WP 시험 설정
-        self.test_waypoint_distance_m = 40.0
+        # WP1~WP4 시험 설정: 미션 시작 위치에서 진행방향 기준 상대거리
+        self.waypoint_forward_distances_m = [40.0, 80.0, 120.0, 160.0]
         self.waypoint_acceptance_radius_m = 15.0
-        self.offboard_test_timeout_sec = 12.0
-        
+        self.waypoint_reached_confirm_count = 3
+        self.offboard_test_timeout_sec = 60.0
+
+        self.waypoints = []
+        self.current_waypoint_index = 0
+        self.waypoint_reached_count = 0
+
         self.target_x = float('nan')
         self.target_y = float('nan')
         self.target_z = float('nan')
-        
+
         self.waypoint_initialized = False
         self.offboard_active_start_time = None
 
@@ -376,7 +381,7 @@ class FixedWingOffboardNode(Node):
     
         if self.mission_state == 'WAIT_FOR_AIRBORNE_MANUAL':
             if self.start_mission_requested and airborne_manual_ready:
-                if not self.initialize_test_waypoint():
+                if not self.initialize_waypoint_list():
                     self.start_mission_requested = False
                     return
     
@@ -415,29 +420,34 @@ class FixedWingOffboardNode(Node):
     
         elif self.mission_state == 'OFFBOARD_ACTIVE':
             self.publish_trajectory_setpoint()
-    
-            distance_m = self.distance_to_test_waypoint()
-    
+
+            distance_m = self.distance_to_current_waypoint()
+            wp_number = self.current_waypoint_index + 1
+
             self.get_logger().info(
-                f'Distance to test WP: {distance_m:.1f} m'
+                f'Distance to WP{wp_number}: {distance_m:.1f} m'
             )
-    
+
             elapsed_sec = (
                 self.get_clock().now()
                 - self.offboard_active_start_time
             ).nanoseconds / 1_000_000_000
-    
+
             if distance_m <= self.waypoint_acceptance_radius_m:
-                self.get_logger().info(
-                    'Test waypoint reached. Switch to STABILIZED or POSITION manually.'
-                )
-                self.mission_state = 'REQUEST_STABILIZED'
-    
+                self.waypoint_reached_count += 1
+            else:
+                self.waypoint_reached_count = 0
+
+            if (
+                self.waypoint_reached_count
+                >= self.waypoint_reached_confirm_count
+            ):
+                self.advance_to_next_waypoint()
+
             elif elapsed_sec >= self.offboard_test_timeout_sec:
                 self.get_logger().warning(
-                    'Test timeout. Returning to STABILIZED.'
+                    'Waypoint mission timeout. Switch to STABILIZED manually.'
                 )
-                self.request_stabilized_mode()
                 self.mission_state = 'REQUEST_STABILIZED'
     
         elif self.mission_state == 'REQUEST_STABILIZED':
@@ -511,9 +521,10 @@ class FixedWingOffboardNode(Node):
     
         self.fw_lateral_setpoint_pub.publish(lateral_msg)
         self.fw_longitudinal_setpoint_pub.publish(longitudinal_msg)
-    def initialize_test_waypoint(self) -> bool:
-        """현재 비행 진행방향의 일정 거리 앞에 임시 로컬 NED WP를 생성한다."""
-        horizontal_speed = math.hypot(self.local_vx, self.local_vy)    
+    def initialize_waypoint_list(self) -> bool:
+        """현재 위치와 진행방향 기준으로 WP1~WP4 로컬 NED 좌표를 생성한다."""
+        horizontal_speed = math.hypot(self.local_vx, self.local_vy)
+
         if (
             math.isnan(self.local_x)
             or math.isnan(self.local_y)
@@ -521,28 +532,66 @@ class FixedWingOffboardNode(Node):
             or horizontal_speed < 3.0
         ):
             self.get_logger().warning(
-                'Cannot create waypoint: local position or velocity is invalid.'
+                'Cannot create waypoint list: local position or velocity is invalid.'
             )
-            return False    
+            return False
+
         direction_north = self.local_vx / horizontal_speed
-        direction_east = self.local_vy / horizontal_speed    
-        self.target_x = (
-            self.local_x
-            + self.test_waypoint_distance_m * direction_north
-        )
-        self.target_y = (
-            self.local_y
-            + self.test_waypoint_distance_m * direction_east
-        )
-        self.target_z = self.local_z    
-        self.waypoint_initialized = True    
+        direction_east = self.local_vy / horizontal_speed
+
+        self.waypoints = []
+        for distance_m in self.waypoint_forward_distances_m:
+            self.waypoints.append({
+                'x': self.local_x + distance_m * direction_north,
+                'y': self.local_y + distance_m * direction_east,
+                'z': self.local_z,
+            })
+
+        self.current_waypoint_index = 0
+        self.waypoint_reached_count = 0
+        self.waypoint_initialized = True
+        self.load_current_waypoint_target()
+
+        for index, waypoint in enumerate(self.waypoints, start=1):
+            self.get_logger().info(
+                f'WP{index} initialized: '
+                f'x={waypoint["x"]:.1f}, '
+                f'y={waypoint["y"]:.1f}, '
+                f'z={waypoint["z"]:.1f}'
+            )
+
+        return True
+
+    def load_current_waypoint_target(self) -> None:
+        """현재 waypoint index의 좌표를 TrajectorySetpoint 목표값에 반영한다."""
+        waypoint = self.waypoints[self.current_waypoint_index]
+        self.target_x = waypoint['x']
+        self.target_y = waypoint['y']
+        self.target_z = waypoint['z']
+
         self.get_logger().info(
-            'Test waypoint initialized: '
+            f'Now tracking WP{self.current_waypoint_index + 1}: '
             f'x={self.target_x:.1f}, '
             f'y={self.target_y:.1f}, '
             f'z={self.target_z:.1f}'
         )
-        return True
+
+    def advance_to_next_waypoint(self) -> None:
+        """현재 WP 도착 처리 후 다음 WP로 전환하거나 수동 인계를 기다린다."""
+        reached_wp_number = self.current_waypoint_index + 1
+        self.get_logger().info(f'WP{reached_wp_number} reached.')
+        self.waypoint_reached_count = 0
+
+        if self.current_waypoint_index < len(self.waypoints) - 1:
+            self.current_waypoint_index += 1
+            self.load_current_waypoint_target()
+            return
+
+        self.get_logger().info(
+            'WP4 reached. Switch the RC mode switch to STABILIZED manually.'
+        )
+        self.mission_state = 'REQUEST_STABILIZED'
+
     def publish_trajectory_setpoint(self) -> None:
         if not self.waypoint_initialized:
             return
@@ -582,7 +631,7 @@ class FixedWingOffboardNode(Node):
     
         self.trajectory_setpoint_pub.publish(msg)
     
-    def distance_to_test_waypoint(self) -> float:
+    def distance_to_current_waypoint(self) -> float:
         if not self.waypoint_initialized:
             return float('inf')
     
