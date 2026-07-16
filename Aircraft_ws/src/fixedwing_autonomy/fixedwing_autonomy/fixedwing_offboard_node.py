@@ -17,8 +17,6 @@ from px4_msgs.msg import (
     VehicleCommand,
     VehicleCommandAck,
     OffboardControlMode,
-    FixedWingLateralSetpoint,
-    FixedWingLongitudinalSetpoint,
     TrajectorySetpoint,
 )
 
@@ -71,20 +69,31 @@ class FixedWingOffboardNode(Node):
         self.hold_altitude_amsl = float('nan')
         self.target_airspeed_mps = 18.0
 
-        # WP1~WP4 시험 설정: 미션 시작 위치에서 진행방향 기준 상대거리
-        self.waypoint_forward_distances_m = [40.0, 80.0, 120.0, 160.0]
-        self.waypoint_acceptance_radius_m = 15.0
-        self.waypoint_reached_confirm_count = 3
-        self.offboard_test_timeout_sec = 60.0
-
+        # WP1~WP4 직선 경로 시험 설정
+        self.waypoint_forward_distances_m = [
+            150.0,
+            250.0,
+            350.0,
+            450.0,
+        ]
+        
+        self.waypoint_acceptance_radius_m = 25.0
+        
+        # 10 Hz 제어 루프에서 3회 연속 도착 조건을 만족해야 인정
+        self.waypoint_reached_confirm_required = 3
+        self.waypoint_reached_confirm_count = 0
+        
+        # 전체 WP1~WP4 미션 제한 시간
+        self.offboard_test_timeout_sec = 90.0
+        
         self.waypoints = []
         self.current_waypoint_index = 0
-        self.waypoint_reached_count = 0
-
+        
+        # publish_trajectory_setpoint()와의 호환을 위해 유지
         self.target_x = float('nan')
         self.target_y = float('nan')
         self.target_z = float('nan')
-
+        
         self.waypoint_initialized = False
         self.offboard_active_start_time = None
 
@@ -141,18 +150,6 @@ class FixedWingOffboardNode(Node):
             '/fmu/in/offboard_control_mode',
             10,
         )
-
-        self.fw_lateral_setpoint_pub = self.create_publisher(
-            FixedWingLateralSetpoint,
-            '/fmu/in/fixed_wing_lateral_setpoint',
-            10,
-        )
-        
-        self.fw_longitudinal_setpoint_pub = self.create_publisher(
-            FixedWingLongitudinalSetpoint,
-            '/fmu/in/fixed_wing_longitudinal_setpoint',
-            10,
-        )
     
         self.start_mission_sub = self.create_subscription(
             Bool,
@@ -182,11 +179,11 @@ class FixedWingOffboardNode(Node):
             self.control_loop,
         )
 
-        self.keyboard_thread = threading.Thread(
-            target=self.wait_for_start_key,
-            daemon=True,
-        )
-        self.keyboard_thread.start()
+        #self.keyboard_thread = threading.Thread(
+        #    target=self.wait_for_start_key,
+        #    daemon=True,
+        #)
+        #self.keyboard_thread.start()
       
 
     def vehicle_status_callback(self, msg: VehicleStatus) -> None:
@@ -380,24 +377,70 @@ class FixedWingOffboardNode(Node):
         )
     
         if self.mission_state == 'WAIT_FOR_AIRBORNE_MANUAL':
-            if self.start_mission_requested and airborne_manual_ready:
-                if not self.initialize_waypoint_list():
-                    self.start_mission_requested = False
+            # Arm 상태이며 고도 10 m 이상이면 자동비행 준비를 시작한다.
+            # 실제 Offboard 진입은 RC/QGC 모드 입력이 담당한다.
+            if airborne_manual_ready:
+                if not self.initialize_waypoint_list(log_result=True):
                     return
-    
+        
                 self.offboard_warmup_count = 0
                 self.mission_state = 'OFFBOARD_WARMUP'
-                self.get_logger().info('State: OFFBOARD_WARMUP')
-    
-        elif self.mission_state == 'OFFBOARD_WARMUP':
-            self.publish_trajectory_setpoint()
-            self.offboard_warmup_count += 1
-    
-            if self.offboard_warmup_count >= 20:
-                self.request_offboard_mode()
-                self.mission_state = 'REQUEST_OFFBOARD'
-                self.get_logger().info('State: REQUEST_OFFBOARD')
         
+                self.get_logger().info(
+                    'State: OFFBOARD_WARMUP — '
+                    'preparing external setpoints.'
+                )
+
+        elif self.mission_state == 'OFFBOARD_WARMUP':
+            # 수동비행 중 기체가 계속 이동하므로,
+            # 현재 위치와 진행방향 기준으로 WP를 갱신한다.
+            if not self.initialize_waypoint_list(log_result=False):
+                return    
+            self.publish_trajectory_setpoint()
+            self.offboard_warmup_count += 1    
+            if self.offboard_warmup_count >= 20:
+                self.mission_state = 'WAIT_FOR_RC_OFFBOARD'    
+                self.get_logger().info(
+                    'State: WAIT_FOR_RC_OFFBOARD — '
+                    'select OFFBOARD using QGC or the RC switch.'
+                )
+        
+        elif self.mission_state == 'WAIT_FOR_RC_OFFBOARD':
+            # Offboard 진입 전까지 목표점을 현재 진행방향 앞쪽으로
+            # 계속 갱신하여, 오래 기다려도 WP가 뒤쪽에 남지 않게 한다.
+            if not self.initialize_waypoint_list(log_result=False):
+                return
+        
+            self.publish_trajectory_setpoint()
+        
+            # 노드가 모드 변경 명령을 보내지 않는다.
+            # QGC 또는 실제 RC 스위치가 PX4를 Offboard로 전환하면
+            # VehicleStatus의 nav_state 변화로 진입을 확인한다.
+            if (
+                self.nav_state
+                == VehicleStatus.NAVIGATION_STATE_OFFBOARD
+            ):
+                # 실제 Offboard 진입 순간의 현재 위치와 진행방향을
+                # 기준으로 WP1~WP4를 최종 생성하고 이후에는 고정한다.
+                if not self.initialize_waypoint_list(
+                    log_result=True,
+                ):
+                    self.get_logger().error(
+                        'Failed to finalize waypoint list.'
+                    )
+                    return
+            
+                self.offboard_active_start_time = (
+                    self.get_clock().now()
+                )
+            
+                self.mission_state = 'OFFBOARD_ACTIVE'
+            
+                self.get_logger().info(
+                    'State: OFFBOARD_ACTIVE — '
+                    'Offboard activated externally.'
+                )
+                    
         elif self.mission_state == 'REQUEST_STABILIZED':
             self.publish_trajectory_setpoint()
         
@@ -419,38 +462,84 @@ class FixedWingOffboardNode(Node):
                 self.get_logger().info('State: OFFBOARD_ACTIVE')
     
         elif self.mission_state == 'OFFBOARD_ACTIVE':
+            # 조종자가 언제든 다른 모드로 전환하면
+            # 자동비행을 즉시 종료한다.
+            if (
+                self.nav_state
+                != VehicleStatus.NAVIGATION_STATE_OFFBOARD
+            ):
+                self.mission_state = 'COMPLETE'
+        
+                self.get_logger().warning(
+                    'State: COMPLETE — '
+                    'pilot exited Offboard externally.'
+                )
+                return
+        
             self.publish_trajectory_setpoint()
-
-            distance_m = self.distance_to_current_waypoint()
-            wp_number = self.current_waypoint_index + 1
-
-            self.get_logger().info(
-                f'Distance to WP{wp_number}: {distance_m:.1f} m'
+        
+            distance_m = (
+                self.distance_to_current_waypoint()
             )
-
+        
+            current_waypoint = self.waypoints[
+                self.current_waypoint_index
+            ]
+        
+            self.get_logger().info(
+                f"Distance to {current_waypoint['name']}: "
+                f'{distance_m:.1f} m'
+            )
+        
             elapsed_sec = (
                 self.get_clock().now()
                 - self.offboard_active_start_time
             ).nanoseconds / 1_000_000_000
-
-            if distance_m <= self.waypoint_acceptance_radius_m:
-                self.waypoint_reached_count += 1
-            else:
-                self.waypoint_reached_count = 0
-
+        
+            # 도착 반경 안에 연속으로 들어오는지 확인
             if (
-                self.waypoint_reached_count
-                >= self.waypoint_reached_confirm_count
+                distance_m
+                <= self.waypoint_acceptance_radius_m
             ):
-                self.advance_to_next_waypoint()
-
-            elif elapsed_sec >= self.offboard_test_timeout_sec:
-                self.get_logger().warning(
-                    'Waypoint mission timeout. Switch to STABILIZED manually.'
+                self.waypoint_reached_confirm_count += 1
+            else:
+                self.waypoint_reached_confirm_count = 0
+        
+            # 3회 연속 도착 조건 만족
+            if (
+                self.waypoint_reached_confirm_count
+                >= self.waypoint_reached_confirm_required
+            ):
+                reached_name = current_waypoint['name']
+        
+                self.get_logger().info(
+                    f'{reached_name} reached.'
                 )
+        
+                if self.advance_to_next_waypoint():
+                    return
+        
+                # 다음 WP가 없으면 WP4까지 완료
+                self.get_logger().info(
+                    'WP1~WP4 mission completed. '
+                    'Switch to POSITION, HOLD, or STABILIZED manually.'
+                )
+        
+                self.mission_state = 'REQUEST_STABILIZED'
+                return
+        
+            if elapsed_sec >= self.offboard_test_timeout_sec:
+                self.get_logger().warning(
+                    'Waypoint mission timeout. '
+                    'Switch to POSITION or HOLD manually.'
+                )
+        
+                # 노드가 직접 모드 명령을 보내지 않는다.
                 self.mission_state = 'REQUEST_STABILIZED'
     
         elif self.mission_state == 'REQUEST_STABILIZED':
+            self.publish_trajectory_setpoint()
+            
             # 전환 완료 전까지 heartbeat는 계속 보내지만
             # 더 이상 새로운 경로는 진행하지 않는다.
             if (
@@ -500,98 +589,138 @@ class FixedWingOffboardNode(Node):
     
         return math.atan2(self.local_vy, self.local_vx)
     
-    def publish_fixed_wing_setpoints(self) -> None:
-        timestamp_us = int(
-            self.get_clock().now().nanoseconds / 1000
+    def initialize_waypoint_list(
+        self,
+        *,
+        log_result: bool = True,
+    ) -> bool:
+        """
+        현재 위치와 진행방향을 기준으로
+        WP1~WP4 직선 경로를 생성한다.
+        """
+        horizontal_speed = math.hypot(
+            self.local_vx,
+            self.local_vy,
         )
     
-        lateral_msg = FixedWingLateralSetpoint()
-        lateral_msg.timestamp = timestamp_us
-        lateral_msg.course = self.hold_course_rad
-        lateral_msg.airspeed_direction = float('nan')
-        lateral_msg.lateral_acceleration = float('nan')
-    
-        longitudinal_msg = FixedWingLongitudinalSetpoint()
-        longitudinal_msg.timestamp = timestamp_us
-        longitudinal_msg.altitude = self.hold_altitude_amsl
-        longitudinal_msg.height_rate = float('nan')
-        longitudinal_msg.equivalent_airspeed = self.target_airspeed_mps
-        longitudinal_msg.pitch_direct = float('nan')
-        longitudinal_msg.throttle_direct = float('nan')
-    
-        self.fw_lateral_setpoint_pub.publish(lateral_msg)
-        self.fw_longitudinal_setpoint_pub.publish(longitudinal_msg)
-    def initialize_waypoint_list(self) -> bool:
-        """현재 위치와 진행방향 기준으로 WP1~WP4 로컬 NED 좌표를 생성한다."""
-        horizontal_speed = math.hypot(self.local_vx, self.local_vy)
-
         if (
             math.isnan(self.local_x)
             or math.isnan(self.local_y)
             or math.isnan(self.local_z)
+            or math.isnan(self.local_vx)
+            or math.isnan(self.local_vy)
             or horizontal_speed < 3.0
         ):
             self.get_logger().warning(
-                'Cannot create waypoint list: local position or velocity is invalid.'
+                'Cannot create waypoint list: '
+                'local position or velocity is invalid.'
             )
             return False
-
+    
         direction_north = self.local_vx / horizontal_speed
         direction_east = self.local_vy / horizontal_speed
-
+    
+        start_x = self.local_x
+        start_y = self.local_y
+        start_z = self.local_z
+    
         self.waypoints = []
-        for distance_m in self.waypoint_forward_distances_m:
-            self.waypoints.append({
-                'x': self.local_x + distance_m * direction_north,
-                'y': self.local_y + distance_m * direction_east,
-                'z': self.local_z,
-            })
-
+    
+        for index, distance_m in enumerate(
+            self.waypoint_forward_distances_m
+        ):
+            waypoint = {
+                'name': f'WP{index + 1}',
+                'x': start_x + distance_m * direction_north,
+                'y': start_y + distance_m * direction_east,
+                'z': start_z,
+            }
+    
+            self.waypoints.append(waypoint)
+    
         self.current_waypoint_index = 0
-        self.waypoint_reached_count = 0
+        self.waypoint_reached_confirm_count = 0
         self.waypoint_initialized = True
-        self.load_current_waypoint_target()
-
-        for index, waypoint in enumerate(self.waypoints, start=1):
+    
+        self.load_current_waypoint_target(
+            log_result=False,
+        )
+    
+        if log_result:
             self.get_logger().info(
-                f'WP{index} initialized: '
-                f'x={waypoint["x"]:.1f}, '
-                f'y={waypoint["y"]:.1f}, '
-                f'z={waypoint["z"]:.1f}'
+                'WP1~WP4 waypoint list initialized.'
             )
-
+    
+            for waypoint in self.waypoints:
+                self.get_logger().info(
+                    f"{waypoint['name']}: "
+                    f"x={waypoint['x']:.1f}, "
+                    f"y={waypoint['y']:.1f}, "
+                    f"z={waypoint['z']:.1f}"
+                )
+    
+            self.get_logger().info(
+                'Now tracking WP1.'
+            )
+    
         return True
-
-    def load_current_waypoint_target(self) -> None:
-        """현재 waypoint index의 좌표를 TrajectorySetpoint 목표값에 반영한다."""
-        waypoint = self.waypoints[self.current_waypoint_index]
+    
+    
+    def load_current_waypoint_target(
+        self,
+        *,
+        log_result: bool = True,
+    ) -> bool:
+        """
+        현재 waypoint의 좌표를 target_x/y/z에 적용한다.
+        """
+        if (
+            not self.waypoints
+            or self.current_waypoint_index
+            >= len(self.waypoints)
+        ):
+            return False
+    
+        waypoint = self.waypoints[
+            self.current_waypoint_index
+        ]
+    
         self.target_x = waypoint['x']
         self.target_y = waypoint['y']
         self.target_z = waypoint['z']
-
-        self.get_logger().info(
-            f'Now tracking WP{self.current_waypoint_index + 1}: '
-            f'x={self.target_x:.1f}, '
-            f'y={self.target_y:.1f}, '
-            f'z={self.target_z:.1f}'
+    
+        if log_result:
+            self.get_logger().info(
+                f"Now tracking {waypoint['name']}: "
+                f"x={self.target_x:.1f}, "
+                f"y={self.target_y:.1f}, "
+                f"z={self.target_z:.1f}"
+            )
+    
+        return True
+    
+    def advance_to_next_waypoint(self) -> bool:
+        """
+        다음 waypoint가 있으면 전환한다.
+    
+        반환값:
+        True  = 다음 WP로 전환됨
+        False = 마지막 WP까지 완료됨
+        """
+        next_index = self.current_waypoint_index + 1
+    
+        if next_index >= len(self.waypoints):
+            return False
+    
+        self.current_waypoint_index = next_index
+        self.waypoint_reached_confirm_count = 0
+    
+        self.load_current_waypoint_target(
+            log_result=True,
         )
-
-    def advance_to_next_waypoint(self) -> None:
-        """현재 WP 도착 처리 후 다음 WP로 전환하거나 수동 인계를 기다린다."""
-        reached_wp_number = self.current_waypoint_index + 1
-        self.get_logger().info(f'WP{reached_wp_number} reached.')
-        self.waypoint_reached_count = 0
-
-        if self.current_waypoint_index < len(self.waypoints) - 1:
-            self.current_waypoint_index += 1
-            self.load_current_waypoint_target()
-            return
-
-        self.get_logger().info(
-            'WP4 reached. Switch the RC mode switch to STABILIZED manually.'
-        )
-        self.mission_state = 'REQUEST_STABILIZED'
-
+    
+        return True
+    
     def publish_trajectory_setpoint(self) -> None:
         if not self.waypoint_initialized:
             return
@@ -632,14 +761,19 @@ class FixedWingOffboardNode(Node):
         self.trajectory_setpoint_pub.publish(msg)
     
     def distance_to_current_waypoint(self) -> float:
-        if not self.waypoint_initialized:
+        """
+        현재 waypoint까지의 수평 거리를 계산한다.
+        """
+        if (
+            not self.waypoint_initialized
+            or not self.waypoints
+        ):
             return float('inf')
     
         dx = self.target_x - self.local_x
         dy = self.target_y - self.local_y
-        dz = self.target_z - self.local_z
     
-        return math.sqrt(dx * dx + dy * dy + dz * dz)
+        return math.hypot(dx, dy)
     
 def main(args=None) -> None:
     rclpy.init(args=args)
