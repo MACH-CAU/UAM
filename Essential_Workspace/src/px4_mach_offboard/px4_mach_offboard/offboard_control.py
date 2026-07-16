@@ -160,10 +160,10 @@ class OffboardControl(Node):
         # waypoints_str = self.get_parameter('waypoints').get_parameter_value().string_value
         # waypoint_list = json.loads(waypoints_str)  # 문자열을 파이썬 리스트로 변환
         waypoint_list = [
-            # [37.5478915, 127.1194249, 20.0, float('nan')],
-            # [37.5474712, 127.1186771, 20.0, float('nan')],
-            # [37.5468944, 127.1186654, 20.0, float('nan')],
-            # [37.5467255, 127.1190820, 20.0, float('nan')],
+            [37.5478915, 127.1194249, 20.0, float('nan')],
+            [37.5474712, 127.1186771, 20.0, float('nan')],
+            [37.5468944, 127.1186654, 20.0, float('nan')],
+            [37.5467255, 127.1190820, 20.0, float('nan')],
             [37.000020299999996, 24.0000292, 20, float('nan')],
             [37.0038957, 24.0000292, 20, float('nan')],
             [37.000020299999996, 24.0000292, 20, float('nan')],
