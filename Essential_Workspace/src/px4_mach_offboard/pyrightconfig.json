@@ -1,0 +1,5 @@
+{
+    "reportMissingImports": false,
+    "reportArgumentType": false,
+    "reportAttributeAccessIssue": false,
+}
