@@ -74,8 +74,7 @@ class FixedWingOffboardNode(Node):
         # WP1~WP4 직선 경로 시험 설정
         self.waypoint_forward_distances_m = [
             150.0,
-            250.0,
-            350.0,
+            300.0,
             450.0,
         ]
         
@@ -551,8 +550,9 @@ class FixedWingOffboardNode(Node):
         
                 # 다음 WP가 없으면 WP4까지 완료
                 self.get_logger().info(
-                    'WP1~WP4 mission completed. '
+                    f'All {len(self.waypoints)} waypoints completed. '
                     'Switch to POSITION, HOLD, or STABILIZED manually.'
+
                 )
         
                 self.mission_state = 'REQUEST_STABILIZED'
@@ -666,9 +666,9 @@ class FixedWingOffboardNode(Node):
     
         if log_result:
             self.get_logger().info(
-                'WP1~WP4 waypoint list initialized.'
+                 f'{len(self.waypoints)}-waypoint mission initialized.'
             )
-    
+                
             for waypoint in self.waypoints:
                 self.get_logger().info(
                     f"{waypoint['name']}: "
