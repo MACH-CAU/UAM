@@ -18,6 +18,8 @@ from px4_msgs.msg import (
     VehicleCommandAck,
     OffboardControlMode,
     TrajectorySetpoint,
+    FixedWingLateralSetpoint,
+    FixedWingLongitudinalSetpoint
 )
 
 from std_msgs.msg import Bool
@@ -148,6 +150,18 @@ class FixedWingOffboardNode(Node):
         self.offboard_control_mode_pub = self.create_publisher(
             OffboardControlMode,
             '/fmu/in/offboard_control_mode',
+            10,
+        )
+
+        self.fw_lateral_setpoint_pub = self.create_publisher(
+            FixedWingLateralSetpoint,
+            '/fmu/in/fixed_wing_lateral_setpoint',
+            10,
+        )
+        
+        self.fw_longitudinal_setpoint_pub = self.create_publisher(
+            FixedWingLongitudinalSetpoint,
+            '/fmu/in/fixed_wing_longitudinal_setpoint',
             10,
         )
     
@@ -396,8 +410,9 @@ class FixedWingOffboardNode(Node):
             # 현재 위치와 진행방향 기준으로 WP를 갱신한다.
             if not self.initialize_waypoint_list(log_result=False):
                 return    
-            self.publish_trajectory_setpoint()
+            
             self.offboard_warmup_count += 1    
+            
             if self.offboard_warmup_count >= 20:
                 self.mission_state = 'WAIT_FOR_RC_OFFBOARD'    
                 self.get_logger().info(
@@ -410,8 +425,6 @@ class FixedWingOffboardNode(Node):
             # 계속 갱신하여, 오래 기다려도 WP가 뒤쪽에 남지 않게 한다.
             if not self.initialize_waypoint_list(log_result=False):
                 return
-        
-            self.publish_trajectory_setpoint()
         
             # 노드가 모드 변경 명령을 보내지 않는다.
             # QGC 또는 실제 RC 스위치가 PX4를 Offboard로 전환하면
@@ -429,7 +442,8 @@ class FixedWingOffboardNode(Node):
                         'Failed to finalize waypoint list.'
                     )
                     return
-            
+                self.publish_fixed_wing_setpoints()
+
                 self.offboard_active_start_time = (
                     self.get_clock().now()
                 )
@@ -442,14 +456,21 @@ class FixedWingOffboardNode(Node):
                 )
                     
         elif self.mission_state == 'REQUEST_STABILIZED':
-            self.publish_trajectory_setpoint()
+            # 아직 Offboard이면 마지막 WP 명령을 유지한다.
+            if (
+                self.nav_state
+                == VehicleStatus.NAVIGATION_STATE_OFFBOARD
+            ):
+                self.publish_fixed_wing_setpoints()
         
-            if self.nav_state != VehicleStatus.NAVIGATION_STATE_OFFBOARD:
+            # Hold, Position, Stabilized 등으로 실제 전환된 뒤 종료
+            else:
                 self.mission_state = 'COMPLETE'
+        
                 self.get_logger().info(
                     'State: COMPLETE — pilot control restored.'
                 )
-    
+
         elif self.mission_state == 'REQUEST_OFFBOARD':
             self.publish_trajectory_setpoint()
     
@@ -475,8 +496,17 @@ class FixedWingOffboardNode(Node):
                     'pilot exited Offboard externally.'
                 )
                 return
-        
-            self.publish_trajectory_setpoint()
+            
+            if self.failsafe is True:
+                self.get_logger().error(
+                    'Failsafe detected during waypoint mission. '
+                    'Waiting for manual or automatic PX4 takeover.'
+                )
+            
+                self.mission_state = 'REQUEST_STABILIZED'
+                return
+                    
+            self.publish_fixed_wing_setpoints()
         
             distance_m = (
                 self.distance_to_current_waypoint()
@@ -537,20 +567,6 @@ class FixedWingOffboardNode(Node):
                 # 노드가 직접 모드 명령을 보내지 않는다.
                 self.mission_state = 'REQUEST_STABILIZED'
     
-        elif self.mission_state == 'REQUEST_STABILIZED':
-            self.publish_trajectory_setpoint()
-            
-            # 전환 완료 전까지 heartbeat는 계속 보내지만
-            # 더 이상 새로운 경로는 진행하지 않는다.
-            if (
-                self.nav_state
-                == VehicleStatus.NAVIGATION_STATE_STAB
-            ):
-                self.mission_state = 'COMPLETE'
-                self.get_logger().info(
-                    'State: COMPLETE — pilot control restored.'
-                )
-    
         elif self.mission_state == 'COMPLETE':
             pass
     
@@ -609,6 +625,7 @@ class FixedWingOffboardNode(Node):
             or math.isnan(self.local_z)
             or math.isnan(self.local_vx)
             or math.isnan(self.local_vy)
+            or math.isnan(self.altitude)
             or horizontal_speed < 3.0
         ):
             self.get_logger().warning(
@@ -634,6 +651,7 @@ class FixedWingOffboardNode(Node):
                 'x': start_x + distance_m * direction_north,
                 'y': start_y + distance_m * direction_east,
                 'z': start_z,
+                'altitude_amsl': self.altitude,
             }
     
             self.waypoints.append(waypoint)
@@ -688,6 +706,7 @@ class FixedWingOffboardNode(Node):
         self.target_x = waypoint['x']
         self.target_y = waypoint['y']
         self.target_z = waypoint['z']
+        self.hold_altitude_amsl = waypoint['altitude_amsl']
     
         if log_result:
             self.get_logger().info(
@@ -695,6 +714,7 @@ class FixedWingOffboardNode(Node):
                 f"x={self.target_x:.1f}, "
                 f"y={self.target_y:.1f}, "
                 f"z={self.target_z:.1f}"
+                f"alt={self.hold_altitude_amsl:.1f} m AMSL"
             )
     
         return True
@@ -720,6 +740,85 @@ class FixedWingOffboardNode(Node):
         )
     
         return True
+    
+    def publish_fixed_wing_setpoints(self) -> None:
+        """
+        현재 위치에서 현재 WP를 향하는 course와
+        유지 고도·목표 등가대기속도를 PX4에 전달한다.
+        """
+        if (
+            not self.waypoint_initialized
+            or math.isnan(self.local_x)
+            or math.isnan(self.local_y)
+            or math.isnan(self.local_vx)
+            or math.isnan(self.local_vy)
+            or math.isnan(self.hold_altitude_amsl)
+        ):
+            return
+    
+        dx = self.target_x - self.local_x
+        dy = self.target_y - self.local_y
+        distance_m = math.hypot(dx, dy)
+    
+        # WP와 거의 동일한 위치에서는 atan2(0, 0)을 피하고
+        # 현재 진행방향을 유지한다.
+        if distance_m >= 1.0:
+            target_course_rad = math.atan2(dy, dx)
+        else:
+            horizontal_speed = math.hypot(
+                self.local_vx,
+                self.local_vy,
+            )
+    
+            if horizontal_speed < 1.0:
+                return
+    
+            target_course_rad = math.atan2(
+                self.local_vy,
+                self.local_vx,
+            )
+    
+        timestamp_us = int(
+            self.get_clock().now().nanoseconds / 1000
+        )
+    
+        lateral_msg = FixedWingLateralSetpoint()
+        lateral_msg.timestamp = timestamp_us
+    
+        # Local NED:
+        # x = North, y = East이므로 atan2(East, North)가 course다.
+        lateral_msg.course = float(target_course_rad)
+    
+        # course 제어만 사용
+        lateral_msg.airspeed_direction = float('nan')
+        lateral_msg.lateral_acceleration = float('nan')
+    
+        longitudinal_msg = FixedWingLongitudinalSetpoint()
+        longitudinal_msg.timestamp = timestamp_us
+    
+        # 반드시 AMSL 고도
+        longitudinal_msg.altitude = float(
+            self.hold_altitude_amsl
+        )
+    
+        # altitude 직접 제어를 사용하므로 height_rate는 NaN
+        longitudinal_msg.height_rate = float('nan')
+    
+        longitudinal_msg.equivalent_airspeed = float(
+            self.target_airspeed_mps
+        )
+    
+        # PX4의 TECS가 pitch와 throttle을 계산하게 한다.
+        longitudinal_msg.pitch_direct = float('nan')
+        longitudinal_msg.throttle_direct = float('nan')
+    
+        self.fw_lateral_setpoint_pub.publish(
+            lateral_msg
+        )
+    
+        self.fw_longitudinal_setpoint_pub.publish(
+            longitudinal_msg
+        )
     
     def publish_trajectory_setpoint(self) -> None:
         if not self.waypoint_initialized:
