@@ -52,10 +52,24 @@ class FixedWingOffboardNode(Node):
         self.local_vx = float('nan')
         self.local_vy = float('nan')
 
+        # 추가
+        self.local_vz = float('nan')
+        
+        # 현재 지면 기준 높이
+        self.current_agl_m = float('nan')
+        self.agl_source = 'invalid'
+        
+        # OFFBOARD 진입 순간의 지면 기준 높이
+        self.offboard_entry_agl_m = float('nan')
+        
+        # 현재 WP의 목표 지면 기준 높이
+        self.hold_agl_m = float('nan')
+
         # 현재 GPS 위치 저장
         self.latitude = float('nan')
         self.longitude = float('nan')
         self.altitude = float('nan')
+        
         
         self.command_ack_received = False
         self.test_start_time = self.get_clock().now()
@@ -69,27 +83,85 @@ class FixedWingOffboardNode(Node):
 
         self.hold_course_rad = float('nan')
         self.hold_altitude_amsl = float('nan')
-        self.target_airspeed_mps = 18.0
+        self.target_airspeed_mps = 15.0
 
-        # WP1~WP4 직선 경로 시험 설정
-        self.waypoint_forward_distances_m = [
-            150.0,
-            300.0,
-            450.0,
+        # 게이트 하단 2.5m + 세로 높이 5m의 절반
+        # = 게이트 중심 5.0m AGL
+        self.gate_target_agl_m = 12.0
+        
+        # OFFBOARD 진입 시 한 번만 계산할 지면 기준값
+        self.ground_altitude_amsl = float('nan')
+        self.ground_local_z = float('nan')
+        
+        # 로그 표시용
+        self.hold_agl_m = float('nan')
+
+        # OFFBOARD 진입 당시 고도를 기준으로
+        # 게이트 구간에서 적용할 고도 보정량
+        #
+        # -3.0: 현재 고도보다 3m 하강
+        # +3.0: 현재 고도보다 3m 상승
+        self.gate_altitude_adjust_m = -3.0
+        
+        
+        # 고정 local NED waypoint
+        #
+        # 현재 시뮬레이션에서 기체 전방이 +y 방향이므로
+        # x는 0으로 유지하고 y를 증가시킨다.
+        #
+        # WP1→WP2 = 100m
+        # WP2→WP3 = 50m
+        # WP3→WP4 = 30m
+        self.fixed_waypoint_plan = [
+            {
+                'name': 'WP1_APPROACH',
+                'x': 0.0,
+                'y': 400.0,
+        
+            },
+            {
+                'name': 'WP2_RECOGNITION',
+                'x': 0.0,
+                'y': 500.0,
+        
+            },
+            {
+                'name': 'WP3_GATE_EXIT',
+                'x': 0.0,
+                'y': 550.0,
+                
+            },
+            {
+                'name': 'WP4_MISSION_END',
+                'x': 0.0,
+                'y': 580.0,
+        
+            },
         ]
+
+        self.waypoint_acceptance_radius_m = 8.0
+        # 고정익이 waypoint를 옆으로 지나쳤을 때
+        # 통과로 인정할 최대 수평거리
+        self.waypoint_pass_corridor_m = 20.0
+        self.waypoint_altitude_acceptance_m = 5.0
+
         
-        self.waypoint_acceptance_radius_m = 25.0
-        
-        # 10 Hz 제어 루프에서 3회 연속 도착 조건을 만족해야 인정
-        self.waypoint_reached_confirm_required = 3
+        # 10 Hz 제어 루프에서 2회 연속 도착 조건을 만족해야 인정
+        self.waypoint_reached_confirm_required = 2
         self.waypoint_reached_confirm_count = 0
+        self.debug_log_count = 0
         
         # 전체 WP1~WP4 미션 제한 시간
-        self.offboard_test_timeout_sec = 90.0
+        self.offboard_test_timeout_sec = 120.0
         
         self.waypoints = []
         self.current_waypoint_index = 0
-        
+
+        # OFFBOARD 진입 순간의 위치
+        # WP1 통과선 판정에 사용한다.
+        self.route_start_x = float('nan')
+        self.route_start_y = float('nan')
+                
         # publish_trajectory_setpoint()와의 호환을 위해 유지
         self.target_x = float('nan')
         self.target_y = float('nan')
@@ -211,8 +283,30 @@ class FixedWingOffboardNode(Node):
         self.local_x = msg.x
         self.local_y = msg.y
         self.local_z = msg.z
+
         self.local_vx = msg.vx
         self.local_vy = msg.vy
+        self.local_vz = msg.vz
+
+        # PX4가 실제 지면까지의 거리를 계산하고 있다면
+        # dist_bottom을 AGL로 우선 사용한다.
+        if (
+            msg.dist_bottom_valid
+            and math.isfinite(msg.dist_bottom)
+            and msg.dist_bottom >= 0.0
+        ):
+            self.current_agl_m = float(
+                msg.dist_bottom
+            )
+            self.agl_source = 'dist_bottom'
+    
+        # dist_bottom이 없다면 local NED z 사용
+        # z는 Down 방향이 양수이므로 비행 중 일반적으로 음수다.
+        else:
+            self.current_agl_m = float(
+                -msg.z
+            )
+            self.agl_source = 'local_z'
 
     def global_position_callback(
         self,
@@ -232,10 +326,16 @@ class FixedWingOffboardNode(Node):
             f'x={self.local_x:.2f}, '
             f'y={self.local_y:.2f}, '
             f'z={self.local_z:.2f}\n'
+            f'height AGL    : '
+            f'{self.current_agl_m:.2f} m '
+            f'[{self.agl_source}]\n'
+            f'vertical speed: '
+            f'{self.local_vz:.2f} m/s '
+            f'[Down positive]\n'
             f'global GPS    : '
             f'lat={self.latitude:.7f}, '
             f'lon={self.longitude:.7f}, '
-            f'alt={self.altitude:.2f}'
+            f'alt_AMSL={self.altitude:.2f} m'
         )
     
     def command_ack_callback(
@@ -420,18 +520,54 @@ class FixedWingOffboardNode(Node):
                 )
         
         elif self.mission_state == 'WAIT_FOR_RC_OFFBOARD':
-            # Offboard 진입 전까지 목표점을 현재 진행방향 앞쪽으로
-            # 계속 갱신하여, 오래 기다려도 WP가 뒤쪽에 남지 않게 한다.
-            if not self.initialize_waypoint_list(log_result=False):
-                return
-        
-            # 노드가 모드 변경 명령을 보내지 않는다.
-            # QGC 또는 실제 RC 스위치가 PX4를 Offboard로 전환하면
-            # VehicleStatus의 nav_state 변화로 진입을 확인한다.
             if (
                 self.nav_state
                 == VehicleStatus.NAVIGATION_STATE_OFFBOARD
             ):
+                if (
+                    not math.isfinite(self.current_agl_m)
+                    or not math.isfinite(self.altitude)
+                    or not math.isfinite(self.local_z)
+                ):
+                    self.get_logger().error(
+                        'Cannot finalize route: '
+                        'AGL, AMSL, or local z is invalid.'
+                    )
+                    return
+                
+                
+                # 현재 위치에서 지면 AMSL 계산
+                #
+                # 예:
+                # 현재 AMSL 45m
+                # 현재 AGL 20m
+                # 지면 AMSL = 25m
+                self.ground_altitude_amsl = (
+                    self.altitude
+                    - self.current_agl_m
+                )
+                
+                
+                # 로컬 NED 좌표에서 지면 z 계산
+                #
+                # 예:
+                # 현재 local_z = -20
+                # 현재 AGL = 20
+                # ground_local_z = 0
+                self.ground_local_z = (
+                    self.local_z
+                    + self.current_agl_m
+                )
+                
+                self.get_logger().info(
+                    'ALTITUDE TARGET CALC | '
+                    f'current_AMSL={self.altitude:.2f}m | '
+                    f'current_AGL={self.current_agl_m:.2f}m | '
+                    f'ground_AMSL={self.ground_altitude_amsl:.2f}m | '
+                    f'target_AGL={self.gate_target_agl_m:.2f}m | '
+                    f'target_AMSL='
+                    f'{self.ground_altitude_amsl + self.gate_target_agl_m:.2f}m'
+                )
                 # 실제 Offboard 진입 순간의 현재 위치와 진행방향을
                 # 기준으로 WP1~WP4를 최종 생성하고 이후에는 고정한다.
                 if not self.initialize_waypoint_list(
@@ -441,8 +577,25 @@ class FixedWingOffboardNode(Node):
                         'Failed to finalize waypoint list.'
                     )
                     return
+                
+                # 최종 경로의 첫 번째 waypoint를 현재 목표로 로드
+                self.current_waypoint_index = 0
+                
+                if not self.load_current_waypoint_target():
+                    self.get_logger().error(
+                        'Failed to load first waypoint target.'
+                    )
+                    return
+                
+                self.get_logger().info(
+                    'First waypoint target loaded | '
+                    f'target_AMSL={self.hold_altitude_amsl:.2f}m | '
+                    f'target_AGL={self.hold_agl_m:.2f}m | '
+                    f'target_z={self.target_z:.2f}m'
+                )
+                
                 self.publish_fixed_wing_setpoints()
-
+                
                 self.offboard_active_start_time = (
                     self.get_clock().now()
                 )
@@ -514,26 +667,119 @@ class FixedWingOffboardNode(Node):
             current_waypoint = self.waypoints[
                 self.current_waypoint_index
             ]
-        
-            self.get_logger().info(
-                f"Distance to {current_waypoint['name']}: "
-                f'{distance_m:.1f} m'
+
+            # 기본값: 아직 waypoint를 통과하지 않음
+            passed_waypoint = False
+            
+            
+            # WP1은 OFFBOARD 진입 위치를 이전 지점으로 사용한다.
+            if self.current_waypoint_index == 0:
+            
+                previous_x = self.route_start_x
+                previous_y = self.route_start_y
+            
+            
+            # WP2 이후는 바로 이전 waypoint를 사용한다.
+            else:
+            
+                previous_waypoint = self.waypoints[
+                    self.current_waypoint_index - 1
+                ]
+            
+                previous_x = previous_waypoint['x']
+                previous_y = previous_waypoint['y']
+            
+            
+            # 이전 지점 → 현재 WP 경로 벡터
+            path_dx = (
+                current_waypoint['x']
+                - previous_x
             )
-        
+            
+            path_dy = (
+                current_waypoint['y']
+                - previous_y
+            )
+            
+            path_length = math.hypot(
+                path_dx,
+                path_dy,
+            )
+            
+            
+            if path_length > 1.0:
+            
+                # 현재 WP → 기체 위치 벡터
+                aircraft_after_dx = (
+                    self.local_x
+                    - current_waypoint['x']
+                )
+            
+                aircraft_after_dy = (
+                    self.local_y
+                    - current_waypoint['y']
+                )
+            
+                # 양수이면 현재 WP 통과선을 넘어간 상태
+                passed_plane_value = (
+                    aircraft_after_dx * path_dx
+                    + aircraft_after_dy * path_dy
+                )
+            
+                passed_waypoint = (
+                    passed_plane_value >= 0.0
+                    and distance_m
+                    <= self.waypoint_pass_corridor_m
+                )
+
+            
+
+            altitude_error_m = abs(
+                self.altitude
+                - current_waypoint['altitude_amsl']
+            )
+
+            requires_altitude = (
+                self.current_waypoint_index == 1
+            )
+
+            altitude_condition_met = (
+                not requires_altitude
+                or altitude_error_m
+                <= self.waypoint_altitude_acceptance_m
+            )
+            
+            if self.debug_log_count % 10 == 0:
+                agl_error_m = (
+                    self.hold_agl_m
+                    - self.current_agl_m
+                )
+                
+                self.get_logger().info(
+                    f"Tracking {current_waypoint['name']} | "
+                    f"distance={distance_m:.1f}m | "
+                    f"current_AGL={self.current_agl_m:.1f}m | "
+                    f"target_AGL={self.hold_agl_m:.1f}m | "
+                    f"AGL_error={agl_error_m:+.1f}m | "
+                    f"vz_down={self.local_vz:+.2f}m/s"
+                )
+                        
             elapsed_sec = (
                 self.get_clock().now()
                 - self.offboard_active_start_time
             ).nanoseconds / 1_000_000_000
         
-            # 도착 반경 안에 연속으로 들어오는지 확인
-            if (
+            waypoint_condition_met = (
                 distance_m
                 <= self.waypoint_acceptance_radius_m
-            ):
+                or passed_waypoint
+            )            
+            
+            if waypoint_condition_met:
                 self.waypoint_reached_confirm_count += 1
             else:
                 self.waypoint_reached_confirm_count = 0
-        
+
             # 3회 연속 도착 조건 만족
             if (
                 self.waypoint_reached_confirm_count
@@ -603,55 +849,130 @@ class FixedWingOffboardNode(Node):
         if speed_horizontal < 1.0:
             return float('nan')
     
-        return math.atan2(self.local_vy, self.local_vx)
-    
     def initialize_waypoint_list(
         self,
         *,
         log_result: bool = True,
     ) -> bool:
         """
-        현재 위치와 진행방향을 기준으로
-        WP1~WP4 직선 경로를 생성한다.
+        고정 local NED x/y 좌표를 사용하고,
+        현재 비행 고도를 기준으로 각 WP의 목표 고도를 생성한다.
         """
-        horizontal_speed = math.hypot(
-            self.local_vx,
-            self.local_vy,
-        )
     
         if (
             math.isnan(self.local_x)
             or math.isnan(self.local_y)
             or math.isnan(self.local_z)
-            or math.isnan(self.local_vx)
-            or math.isnan(self.local_vy)
             or math.isnan(self.altitude)
-            or horizontal_speed < 3.0
         ):
-            self.get_logger().warning(
-                'Cannot create waypoint list: '
-                'local position or velocity is invalid.'
-            )
+            if log_result:
+                self.get_logger().warning(
+                    'Cannot initialize fixed waypoint route: '
+                    'position or altitude is invalid.'
+                )
+    
             return False
     
-        direction_north = self.local_vx / horizontal_speed
-        direction_east = self.local_vy / horizontal_speed
+        # 실제 OFFBOARD 전환 직전에 호출된 현재 위치를
+        # WP1 통과선 판정용 경로 시작점으로 저장한다.
+        self.route_start_x = self.local_x
+        self.route_start_y = self.local_y
     
-        start_x = self.local_x
-        start_y = self.local_y
-        start_z = self.local_z
+        # 실제 OFFBOARD 진입 후 고정된 지면 기준이 있으면 사용
+        if (
+            math.isfinite(
+                self.ground_altitude_amsl
+            )
+            and math.isfinite(
+                self.ground_local_z
+            )
+        ):
+            ground_altitude_amsl = (
+                self.ground_altitude_amsl
+            )
+        
+            ground_local_z = (
+                self.ground_local_z
+            )
+        
+        # OFFBOARD 진입 전에는 현재 위치로 임시 지면 기준 계산
+        elif (
+            math.isfinite(self.altitude)
+            and math.isfinite(self.local_z)
+            and math.isfinite(self.current_agl_m)
+        ):
+            ground_altitude_amsl = (
+                self.altitude
+                - self.current_agl_m
+            )
+        
+            ground_local_z = (
+                self.local_z
+                + self.current_agl_m
+            )
+        
+            if log_result:
+                self.get_logger().info(
+                    'Using temporary ground reference | '
+                    f'ground_AMSL={ground_altitude_amsl:.2f}m | '
+                    f'ground_local_z={ground_local_z:.2f}m'
+                )
+        
+        else:
+            if log_result:
+                self.get_logger().warning(
+                    'Cannot estimate ground reference: '
+                    'AGL, AMSL, or local z is invalid.'
+                )
+        
+            return False        
+        if math.isfinite(
+            self.offboard_entry_agl_m
+        ):
+            base_agl_m = (
+                self.offboard_entry_agl_m
+            )
+        else:
+            # OFFBOARD 진입 전 임시 경로 생성용
+            base_agl_m = (
+                self.current_agl_m
+            )
     
         self.waypoints = []
     
-        for index, distance_m in enumerate(
-            self.waypoint_forward_distances_m
-        ):
+        for plan in self.fixed_waypoint_plan:
+    
+            waypoint_x = float(plan['x'])
+            waypoint_y = float(plan['y'])
+
+            # 안전하게 음수 고도가 생성되지 않도록 제한
+            target_agl_m = max(
+                5.0,
+                float(self.gate_target_agl_m),
+            )
+            
+            waypoint_altitude_amsl = (
+                ground_altitude_amsl
+                + target_agl_m
+            )
+
+            waypoint_z = (
+                ground_local_z
+                - target_agl_m
+            )
+
+            
             waypoint = {
-                'name': f'WP{index + 1}',
-                'x': start_x + distance_m * direction_north,
-                'y': start_y + distance_m * direction_east,
-                'z': start_z,
-                'altitude_amsl': self.altitude,
+                'name': plan['name'],
+                'x': waypoint_x,
+                'y': waypoint_y,
+                'z': waypoint_z,
+                'altitude_amsl': (
+                    waypoint_altitude_amsl
+                ),
+                'target_agl_m': ( 
+                    target_agl_m
+                ),
             }
     
             self.waypoints.append(waypoint)
@@ -666,23 +987,31 @@ class FixedWingOffboardNode(Node):
     
         if log_result:
             self.get_logger().info(
-                 f'{len(self.waypoints)}-waypoint mission initialized.'
+                'Fixed-coordinate WP1~WP4 route initialized.'
             )
-                
+    
+            self.get_logger().info(
+                f'Route start | '
+                f'x={self.route_start_x:.1f}, '
+                f'y={self.route_start_y:.1f}, '
+                f'altitude={ground_altitude_amsl:.1f}m AMSL'
+            )
+    
             for waypoint in self.waypoints:
                 self.get_logger().info(
-                    f"{waypoint['name']}: "
+                    f"{waypoint['name']} | "
                     f"x={waypoint['x']:.1f}, "
                     f"y={waypoint['y']:.1f}, "
-                    f"z={waypoint['z']:.1f}"
+                    f"z={waypoint['z']:.1f}, "
+                    f"altitude="
+                    f"{waypoint['altitude_amsl']:.1f}m AMSL"
                 )
     
             self.get_logger().info(
-                'Now tracking WP1.'
+                'Now tracking WP1_APPROACH.'
             )
     
         return True
-    
     
     def load_current_waypoint_target(
         self,
@@ -707,14 +1036,16 @@ class FixedWingOffboardNode(Node):
         self.target_y = waypoint['y']
         self.target_z = waypoint['z']
         self.hold_altitude_amsl = waypoint['altitude_amsl']
+        self.hold_agl_m = waypoint['target_agl_m']
     
         if log_result:
             self.get_logger().info(
-                f"Now tracking {waypoint['name']}: "
-                f"x={self.target_x:.1f}, "
-                f"y={self.target_y:.1f}, "
-                f"z={self.target_z:.1f}"
-                f"alt={self.hold_altitude_amsl:.1f} m AMSL"
+                'ALTITUDE CHECK | '
+                f'entry_AMSL={self.altitude:.2f} | '
+                f'ground_AMSL={self.ground_altitude_amsl:.2f} | '
+                f'calculated_target_AMSL='
+                f'{self.ground_altitude_amsl + self.gate_target_agl_m:.2f} | '
+                f'loaded_target_AMSL={self.hold_altitude_amsl:.2f}'
             )
     
         return True
