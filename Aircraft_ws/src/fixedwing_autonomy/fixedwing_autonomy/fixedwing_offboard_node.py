@@ -112,31 +112,16 @@ class FixedWingOffboardNode(Node):
         # WP1→WP2 = 100m
         # WP2→WP3 = 50m
         # WP3→WP4 = 30m
+        # 고정 local NED waypoint
         self.fixed_waypoint_plan = [
-            {
-                'name': 'WP1_APPROACH',
-                'x': 0.0,
-                'y': 400.0,
+            {'name': 'WP1_APPROACH', 'x': 0.0, 'y': 200.0},
+            {'name': 'WP2_RECOGNITION', 'x': 0.0, 'y': 300.0},
         
-            },
-            {
-                'name': 'WP2_RECOGNITION',
-                'x': 0.0,
-                'y': 500.0,
+            # WP2와 WP3 사이 시험용 waypoint
+            {'name': 'WP2_5_OFFSET', 'x': -7.0, 'y': 325.0},
         
-            },
-            {
-                'name': 'WP3_GATE_EXIT',
-                'x': 0.0,
-                'y': 550.0,
-                
-            },
-            {
-                'name': 'WP4_MISSION_END',
-                'x': 0.0,
-                'y': 580.0,
-        
-            },
+            {'name': 'WP3_GATE_EXIT', 'x': 0.0, 'y': 350.0},
+            {'name': 'WP4_MISSION_END', 'x': 0.0, 'y': 380.0},
         ]
 
         self.waypoint_acceptance_radius_m = 8.0
