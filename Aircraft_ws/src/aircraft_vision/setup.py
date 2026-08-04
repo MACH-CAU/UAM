@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = 'fixedwing_autonomy'
+package_name = 'aircraft_vision'
 
 setup(
     name=package_name,
@@ -16,7 +16,7 @@ setup(
     maintainer='yerin',
     maintainer_email='nayl0301@naver.com',
     description='TODO: Package description',
-    license='TODO: License declaration',
+    license='Apache-2.0',
     extras_require={
         'test': [
             'pytest',
@@ -24,7 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'fixedwing_offboard_node = fixedwing_autonomy.fixedwing_offboard_node:main',
+            'gate_detector_node = aircraft_vision.gate_detector_node:main',
             'gate_decision_node = aircraft_vision.gate_decision_node:main',
         ],
     },
