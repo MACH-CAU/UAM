@@ -70,7 +70,7 @@ ls -l /dev/serial/by-id/
 
 # 3. UART-to-USB Converter LED가 꺼졌을 때
 
-현재 사용 중인 Converter에서 간헐적으로 LED가 꺼지고 통신이 안 되는 현상이 있었다.
+현재 사용 중인 Converter에서 간헐적으로 LED가 꺼지거나 conneted가 안 될 때
 
 이 경우:
 
