@@ -5,7 +5,7 @@
 현재 Raspberry Pi는 사용하지 않고 **Cube Orange와 Jetson Orin Nano를 직접 연결**한다.
 
 ```text
-RC 조종기
+RC 조종기(조종기 ch6 안 먹으면 FC 재부팅 한 번 ㄱㄱ)
     ↓
 Cube Orange
     ↕
@@ -540,37 +540,4 @@ fixedwing_autonomy
 
 ---
 
-# 14. 현재 최종 성공 구성
 
-```text
-RC Controller
-      ↓
-Cube Orange
-      ↕
-TELEM2 UART
-      ↕
-UART-to-USB Converter
-      ↕
-Jetson Orin Nano
-      │
-      ├── MicroXRCEAgent
-      │
-      ├── ROS2 Humble
-      │
-      ├── px4_msgs v1.17.0
-      │
-      └── Aircraft_ws
-```
-
-현재 확인 완료:
-
-```text
-[✓] Cube uxrce_dds_client 실행
-[✓] Cube ↔ Jetson UART 연결
-[✓] MicroXRCEAgent connected
-[✓] /fmu/out/... topic discovery
-[✓] /fmu/out/vehicle_status_v1 실제 echo
-[✓] px4_msgs MESSAGE_VERSION = 1
-[✓] Jetson → FC onboard_computer_status publish
-[✓] FC에서 Jetson publish 데이터 수신
-```
