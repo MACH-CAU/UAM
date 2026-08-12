@@ -149,6 +149,7 @@ ls -l /dev/ttyUSB*
 현재 `/dev/ttyUSB0`인 경우 다음을 실행한다.
 
 ```bash
+단축어 : exportros
 source /opt/ros/humble/setup.bash
 source ~/px4_ros_uxrce_dds_ws/install/local_setup.bash
 
@@ -160,8 +161,8 @@ export ROS_DOMAIN_ID=0
 ```
 
 그다음 MicroXRCEAgent 실행:
-
 ```bash
+단축어: uxrce
 MicroXRCEAgent serial -D /dev/ttyUSB0 -b 921600 -v 6
 ```
 
@@ -467,6 +468,7 @@ Running, connected
 ## Step 5. Jetson 터미널 2 - ROS2
 
 ```bash
+단축어:aircraft_ros
 source /opt/ros/humble/setup.bash
 source ~/Aircraft_ws/install/setup.bash
 
