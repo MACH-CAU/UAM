@@ -1,2 +1,11 @@
 # 2026 MACH VTOL
-### 2026년 VTOL 비행 테스트
+### jetson 단축어 모음
+1. colcon build --symlink-install
+```bash
+cb
+```
+2. source install/setup.bash
+```bash
+sib
+```
+
